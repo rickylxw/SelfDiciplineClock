@@ -41,8 +41,13 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 APP_NAME = "DesktopTimeTracker"
 
 VERSION = "1.0.0"
-RAW_URL = ("https://raw.githubusercontent.com/rickylxw/SelfDiciplineClock/"
-           "main/time_tracker.py")
+_REPO = "rickylxw/SelfDiciplineClock"
+# 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
+UPDATE_URLS = [
+    f"https://raw.githubusercontent.com/{_REPO}/main/time_tracker.py",
+    f"https://cdn.jsdelivr.net/gh/{_REPO}@main/time_tracker.py",
+    f"https://fastly.jsdelivr.net/gh/{_REPO}@main/time_tracker.py",
+]
 
 COLORS = {
     "工作": "#4CAF50",
@@ -159,15 +164,21 @@ def version_gt(a, b):
         return False
 
 
-def fetch_latest(timeout=5):
-    """返回 (版本号, 最新脚本全文)；无网络或结构不对时抛异常。"""
+def fetch_latest(timeout=6):
+    """逐个尝试更新源，返回 (版本号, 最新脚本全文)；全部失败抛异常。"""
     import urllib.request
-    with urllib.request.urlopen(RAW_URL, timeout=timeout) as resp:
-        text = resp.read().decode("utf-8")
-    ver = parse_version(text)
-    if not ver:
-        raise ValueError("远端文件缺少版本号")
-    return ver, text
+    last_err = OSError("无可用更新源")
+    for url in UPDATE_URLS:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                text = resp.read().decode("utf-8")
+            ver = parse_version(text)
+            if not ver:
+                raise ValueError("远端文件缺少版本号")
+            return ver, text
+        except (OSError, ValueError) as e:
+            last_err = e
+    raise last_err
 
 
 def apply_update(text):
