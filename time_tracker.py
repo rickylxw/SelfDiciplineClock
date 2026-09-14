@@ -22,6 +22,7 @@ import json
 import os
 import queue
 import socket
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -38,6 +39,10 @@ CATEGORIES = ["工作", "游戏", "学习"]
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.json")
 
 APP_NAME = "DesktopTimeTracker"
+
+VERSION = "1.0.0"
+RAW_URL = ("https://raw.githubusercontent.com/rickylxw/SelfDiciplineClock/"
+           "main/time_tracker.py")
 
 COLORS = {
     "工作": "#4CAF50",
@@ -134,6 +139,55 @@ def lan_ip():
         return "127.0.0.1"
     finally:
         s.close()
+
+
+# ---------------- 自动更新 ----------------
+
+def parse_version(text):
+    for line in text.splitlines():
+        if line.startswith("VERSION = "):
+            return line.split("= ", 1)[1].strip().strip('"')
+    return None
+
+
+def version_gt(a, b):
+    def parts(v):
+        return tuple(int(x) for x in v.split("."))
+    try:
+        return parts(a) > parts(b)
+    except (ValueError, TypeError):
+        return False
+
+
+def fetch_latest(timeout=5):
+    """返回 (版本号, 最新脚本全文)；无网络或结构不对时抛异常。"""
+    import urllib.request
+    with urllib.request.urlopen(RAW_URL, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8")
+    ver = parse_version(text)
+    if not ver:
+        raise ValueError("远端文件缺少版本号")
+    return ver, text
+
+
+def apply_update(text):
+    """备份当前脚本并替换为新版，返回是否成功。"""
+    path = os.path.abspath(__file__)
+    try:
+        compile(text, path, "exec")  # 语法校验，防止写入残缺脚本
+        with open(path, "r", encoding="utf-8") as f:
+            old = f.read()
+        with open(path + ".update.bak", "w", encoding="utf-8") as f:
+            f.write(old)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return True
+    except (OSError, SyntaxError):
+        return False
+
+
+def restart_app():
+    subprocess.Popen([sys.executable, os.path.abspath(__file__)])
 
 
 class SyncServer:
@@ -311,6 +365,7 @@ class TimeTracker(tk.Tk):
         self.sync_server = None
         self.mirror = None          # 客户端镜像：{"cat", "elapsed", "ts"}
         self.sync_warned = False
+        self.pending_ver = None
         if self.settings.get("sync_host"):
             self.start_host()
 
@@ -320,6 +375,7 @@ class TimeTracker(tk.Tk):
         self.update_loop()
         self.hotkey_loop()
         self.sync_loop()
+        self.after(15000, self.silent_update_check)
 
     def position_window(self):
         w, h = 480, 62
@@ -413,6 +469,7 @@ class TimeTracker(tk.Tk):
         self.menu.add_checkbutton(label="开机自启",
                                   variable=self.autostart_item,
                                   command=self.toggle_autostart)
+        self.menu.add_command(label="检查更新", command=self.check_update)
         self.menu.add_command(label="退出", command=self.on_close)
         for w in (bar, self.status, self.mode_btn):
             w.bind("<Button-3>", self.popup_menu)
@@ -1119,6 +1176,54 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             messagebox.showerror("局域网同步",
                                  "主机不可达，操作未执行。"
                                  "\n可用「立即同步」前先检查网络。")
+
+    # ---------------- 自动更新 ----------------
+
+    def silent_update_check(self):
+        """启动 15 秒后静默检查一次，有新版仅提示，由用户决定。"""
+        self._update_worker(lambda res: self.toast(
+            "发现新版本",
+            f"当前 v{VERSION}，最新 v{res[0]}。\n右键 →「检查更新」可立即升级。")
+            if res else None)
+
+    def check_update(self):
+        """手动检查：有新版则下载替换并询问重启。"""
+        def done(res):
+            if res is None:
+                messagebox.showinfo("检查更新", "检查失败：无法访问 GitHub，"
+                                    "请检查网络。")
+            elif not res:
+                messagebox.showinfo("检查更新",
+                                    f"已是最新版本 v{VERSION}。")
+            elif res is True:
+                if messagebox.askyesno(
+                        "检查更新",
+                        f"已更新到 v{self.pending_ver}，重启程序生效。现在重启吗？"):
+                    restart_app()
+                    self.on_close()
+            else:
+                ver, text = res
+                self.pending_ver = ver
+                if messagebox.askyesno(
+                        "检查更新",
+                        f"发现新版本 v{ver}（当前 v{VERSION}），现在更新吗？"):
+                    if apply_update(text):
+                        done(True)
+                    else:
+                        messagebox.showerror("检查更新", "更新失败：文件写入被占用。")
+        self._update_worker(done)
+
+    def _update_worker(self, on_done):
+        """后台线程拉取远端版本；on_done 收到：
+        None=检查失败 / False=已最新 / (版本, 全文)=有更新。"""
+        def run():
+            try:
+                ver, text = fetch_latest()
+                res = (ver, text) if version_gt(ver, VERSION) else False
+            except (OSError, ValueError):
+                res = None
+            self.after(0, lambda: on_done(res))
+        threading.Thread(target=run, daemon=True).start()
 
     # ---------------- 通用 ----------------
 
