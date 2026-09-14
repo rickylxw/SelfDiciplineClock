@@ -1,0 +1,13 @@
+# 个人计时数据，不上传
+time_data.json
+time_data.json.bak
+time_data.json.migrated.bak
+
+__pycache__/
+*.pyc
+
+# Android 构建产物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
