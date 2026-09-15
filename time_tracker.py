@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.2.4"
+VERSION = "1.2.5"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -806,20 +806,21 @@ class TimeTracker(tk.Tk):
                 w.attributes("-topmost", True)
                 self._topmost_done.add(id(w))
 
-    def _popup_visible(self):
-        """本应用有任何弹窗/菜单打开时为真，此时悬浮条不重申置顶。"""
-        if self.menu.winfo_ismapped():
-            return True
-        for w in list(self.dlg.winfo_children()) + list(self.winfo_children()):
-            if isinstance(w, tk.Toplevel) and w.winfo_viewable():
-                return True
-        return False
+    WS_EX_TOPMOST = 0x00000008
+    GWL_EXSTYLE = -20
+
+    def _is_topmost(self):
+        """读窗口的 WS_EX_TOPMOST 样式位，判断是否仍在置顶层。"""
+        hwnd = user32.GetAncestor(self.winfo_id(), 2)  # GA_ROOT
+        style = user32.GetWindowLongW(hwnd, self.GWL_EXSTYLE)
+        return bool(style & self.WS_EX_TOPMOST)
 
     def refresh(self):
-        # 悬浮条置顶只用于压住其他应用；本应用有弹窗/菜单打开时
-        # 暂停重申，让后弹出的东西稳定待在最上层，互不打架
+        # 悬浮条置顶只用于压住其他应用。重申置顶会把悬浮条顶到
+        # 置顶窗口组最上层，盖住主菜单/弹窗，因此不能每秒无脑申明；
+        # 只有置顶样式位真的丢失（如锁屏解锁后）时才补一次。
         self._apply_popup_topmost()
-        if not self._popup_visible():
+        if not self._is_topmost():
             self.attributes("-topmost", True)
         for cat in CATEGORIES:
             total = self.display_seconds(cat)
