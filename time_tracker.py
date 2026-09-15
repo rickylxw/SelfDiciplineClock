@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -794,19 +794,19 @@ class TimeTracker(tk.Tk):
                 self.toast("时长提醒", f"「{cat}」已连续 1 小时。")
 
     def _raise_dialogs_above_bar(self):
-        """把打开中的自有弹窗抬到悬浮条之上。
+        """维持用户定义的图层顺序（上→下）：
 
-        悬浮条每秒申明置顶会把自己顶到置顶窗口组最上层。输入框
-        类弹窗本身不是置顶窗口，光 lift 只能到普通组顶部、仍在
-        置顶的悬浮条之下；必须先给它们也打上置顶属性进入置顶组，
-        再 lift，才能稳定排在悬浮条上面。
+        提醒气泡 > 弹窗（待办输入框/历史统计/目标设置）> 悬浮条。
+        悬浮条申明置顶会把自己顶到置顶窗口组最上层，因此申明后
+        按层次重新抬升：先抬弹窗，最后抬气泡（后抬者在上）。
+        主菜单是系统原生弹出菜单，Windows 保证其显示在最上层。
         """
         for w in self.dlg.winfo_children():
             if w.winfo_viewable():
                 w.attributes("-topmost", True)
                 w.lift()
         for w in self.winfo_children():
-            if isinstance(w, tk.Toplevel) and not getattr(w, "_is_toast", False) \
+            if isinstance(w, tk.Toplevel) and getattr(w, "_is_toast", False) \
                     and w.winfo_viewable():
                 w.attributes("-topmost", True)
                 w.lift()
@@ -1003,6 +1003,7 @@ class TimeTracker(tk.Tk):
         y = self.winfo_screenheight() - h - 60
         win.geometry(f"+{x}+{y}")
         win.after(duration_ms, win.destroy)
+        return win
 
     # ---------------- 统计窗口 / 导出 ----------------
 
