@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -113,6 +113,7 @@ def load_data():
             day.setdefault(c, 0)
     settings = data.get("settings", {})
     settings.setdefault("goals", {c: 0 for c in CATEGORIES})  # 秒，0 = 无目标
+    settings.setdefault("goals_updated_ts", 0.0)  # 目标最后修改时间，同步用
     settings.setdefault("pomodoro", False)
     settings.setdefault("idle_pause", True)
     settings.setdefault("host_addr", "")      # 客户端模式连接的主机 IP
@@ -124,14 +125,16 @@ def load_data():
 
 
 def merge_daily(dst, src):
-    """按 日期+分类 取较大值合并，返回 dst。"""
+    """按 日期+分类 取较大值合并，返回发生变化的格子数。"""
+    changed = 0
     for d, day in src.items():
         tgt = dst.setdefault(d, {c: 0 for c in CATEGORIES})
         for c in CATEGORIES:
             v = day.get(c, 0)
             if v > tgt.get(c, 0):
                 tgt[c] = v
-    return dst
+                changed += 1
+    return changed
 
 
 def lan_ip():
@@ -229,7 +232,9 @@ class SyncServer:
                     a = outer.app
                     self._send({"daily": a.data["daily"],
                                 "running_cat": a.running_cat,
-                                "elapsed": a.elapsed()})
+                                "elapsed": a.elapsed(),
+                                "goals": a.settings.get("goals", {}),
+                                "goals_ts": a.settings.get("goals_updated_ts", 0)})
                 else:
                     self.send_error(404)
 
@@ -371,6 +376,7 @@ class TimeTracker(tk.Tk):
         # 番茄钟状态：None / "focus" / "break"
         self.pom_state = None
         self.pom_end_ts = 0.0
+        self._last_tick = datetime.now().timestamp()
 
         # 局域网同步
         self.sync_server = None
@@ -620,6 +626,7 @@ class TimeTracker(tk.Tk):
     # ---------------- 主循环 ----------------
 
     def update_loop(self):
+        self.handle_wakeup_gap()
         self.check_external_change()
         self.process_sync_queue()
         self.check_idle()
@@ -627,6 +634,26 @@ class TimeTracker(tk.Tk):
         self.check_continuous_alert()
         self.refresh()
         self.after(TICK_MS, self.update_loop)
+
+    def handle_wakeup_gap(self):
+        """锁屏睡眠唤醒：tick 间隔异常大说明系统刚从睡眠恢复。
+
+        睡眠期间进程被冻结、无键鼠输入，这段时间不应计入任何计时。
+        """
+        now = datetime.now().timestamp()
+        gap = now - getattr(self, "_last_tick", now)
+        self._last_tick = now
+        if gap < 60:
+            return
+        if self.running_cat and self.start_ts:
+            self.start_ts += gap          # 把睡眠时长从会话中剔除
+            self.last_remind_ts = 0.0
+        if self.pom_state:
+            self.pom_end_ts += gap        # 番茄钟倒计时顺延
+        if self.running_cat or self.pom_state:
+            self.toast("系统唤醒",
+                       "电脑刚从睡眠中唤醒，睡眠时间未计入计时，"
+                       "当前计时已自动延续。")
 
     def check_idle(self):
         if not self.idle_var.get():
@@ -666,6 +693,8 @@ class TimeTracker(tk.Tk):
                 self.toast("时长提醒", f"「{cat}」已连续 1 小时。")
 
     def refresh(self):
+        # 解锁/切换窗口后 Windows 可能让置顶失效，每秒重申一次
+        self.attributes("-topmost", True)
         for cat in CATEGORIES:
             total = self.display_seconds(cat)
             if self.running_cat == cat:
@@ -821,6 +850,7 @@ class TimeTracker(tk.Tk):
             except ValueError:
                 messagebox.showerror("每日目标", "请输入有效数字。", parent=win)
                 return
+            self.settings["goals_updated_ts"] = datetime.now().timestamp()
             self.save()
             self.refresh()
             win.destroy()
@@ -1118,14 +1148,18 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             return json.loads(resp.read().decode("utf-8"))
 
     def sync_loop(self):
-        """客户端轮询：双向合并数据 + 镜像主机计时状态。"""
+        """客户端轮询：双向合并数据与每日目标 + 镜像主机计时状态。"""
         if self.settings.get("host_addr"):
             try:
                 st = self.fetch_state()
                 self.sync_warned = False
-                merge_daily(self.data["daily"], st.get("daily", {}))
-                # 本地数据推回主机，形成双向合并
-                self.post("/merge", {"daily": self.data["daily"]})
+                changed = merge_daily(self.data["daily"], st.get("daily", {}))
+                # 本地数据推回主机，形成双向合并（含每日目标）
+                self.post("/merge", {"daily": self.data["daily"],
+                                     "goals": self.settings.get("goals", {}),
+                                     "goals_ts": self.settings.get("goals_updated_ts", 0)})
+                if self.apply_remote_goals(st.get("goals"), st.get("goals_ts")):
+                    changed += 1
                 if st.get("running_cat"):
                     self.mirror = {"cat": st["running_cat"],
                                    "elapsed": st.get("elapsed", 0),
@@ -1138,9 +1172,25 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                                    "合并时将保留较长的一段时间。")
                 else:
                     self.mirror = None
+                if changed:
+                    self.refresh()
             except (OSError, json.JSONDecodeError, KeyError):
                 self.mirror = None
         self.after(SYNC_POLL_MS, self.sync_loop)
+
+    def apply_remote_goals(self, goals, ts):
+        """每日目标同步：时间戳新者胜，返回本端是否被更新。"""
+        if not isinstance(goals, dict) or not isinstance(ts, (int, float)):
+            return False
+        if ts <= self.settings.get("goals_updated_ts", 0):
+            return False
+        local = dict(self.settings.get("goals", {}))
+        for c in CATEGORIES:
+            if c in goals:
+                local[c] = goals[c]
+        self.settings["goals"] = local
+        self.settings["goals_updated_ts"] = ts
+        return True
 
     def process_sync_queue(self):
         """主机端消费同步服务线程投递的任务。"""
@@ -1152,9 +1202,13 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             except queue.Empty:
                 break
             if kind == "merge":
-                merge_daily(self.data["daily"], payload)
-                self.save()
-                self.refresh()
+                changed = merge_daily(self.data["daily"], payload.get("daily", {}))
+                if self.apply_remote_goals(payload.get("goals"),
+                                           payload.get("goals_ts")):
+                    changed += 1
+                if changed:
+                    self.save()
+                    self.refresh()
             elif kind == "control" and payload.get("action") == "toggle":
                 cat = payload.get("cat")
                 if cat in CATEGORIES:
@@ -1167,7 +1221,10 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             try:
                 st = self.fetch_state(addr)
                 merge_daily(self.data["daily"], st.get("daily", {}))
-                self.post("/merge", {"daily": self.data["daily"]})
+                self.post("/merge", {"daily": self.data["daily"],
+                                     "goals": self.settings.get("goals", {}),
+                                     "goals_ts": self.settings.get("goals_updated_ts", 0)})
+                self.apply_remote_goals(st.get("goals"), st.get("goals_ts"))
                 self.save()
                 self.refresh()
                 messagebox.showinfo("立即同步", f"已与 {addr} 完成双向同步。")
@@ -1275,6 +1332,12 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             if key in ext_settings and ext_settings[key] != self.settings.get(key):
                 self.settings[key] = ext_settings[key]
                 changed = True
+        if "goals" in ext_settings:
+            # 外部改了目标：打上时间戳，让局域网同步把这次修改传播出去
+            self.settings["goals_updated_ts"] = max(
+                self.settings.get("goals_updated_ts", 0),
+                ext_settings.get("goals_updated_ts", 0),
+                datetime.now().timestamp() if changed else 0)
         if changed:
             if isinstance(self.settings.get("font_size"), int):
                 self.apply_ui_size()
