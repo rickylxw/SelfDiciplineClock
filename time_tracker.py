@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -206,7 +206,14 @@ def apply_update(text):
 
 
 def restart_app():
-    subprocess.Popen([sys.executable, os.path.abspath(__file__)])
+    """延迟启动新实例：旧进程退出并释放同步端口后，新进程再启动。"""
+    path = os.path.abspath(__file__)
+    no_window = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+    starter = ("import time, subprocess, sys; time.sleep(1.2); "
+               f"subprocess.Popen([sys.executable, {path!r}], "
+               f"creationflags={no_window})")
+    subprocess.Popen([sys.executable, "-c", starter],
+                     creationflags=no_window)
 
 
 class SyncServer:
@@ -392,7 +399,6 @@ class TimeTracker(tk.Tk):
         self.sync_server = None
         self.mirror = None          # 客户端镜像：{"cat", "elapsed", "ts"}
         self.sync_warned = False
-        self.pending_ver = None
         self.last_client_active_ts = 0.0  # 最近一次客户端报告的用户活动
         if self.settings.get("sync_host"):
             self.start_host()
@@ -1304,11 +1310,12 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         """启动 15 秒后静默检查一次，有新版仅提示，由用户决定。"""
         self._update_worker(lambda res: self.toast(
             "发现新版本",
-            f"当前 v{VERSION}，最新 v{res[0]}。\n右键 →「检查更新」可立即升级。")
+            f"当前 v{VERSION}，最新 v{res[0]}。\n"
+            "右键 →「检查更新」可升级（自动重启）。")
             if res else None)
 
     def check_update(self):
-        """手动检查：有新版则下载替换并询问重启。"""
+        """手动检查：一次确认后更新并自动重启。"""
         def done(res):
             if res is None:
                 messagebox.showinfo("检查更新", "检查失败：无法访问 GitHub，"
@@ -1316,22 +1323,23 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             elif not res:
                 messagebox.showinfo("检查更新",
                                     f"已是最新版本 v{VERSION}。")
-            elif res is True:
-                if messagebox.askyesno(
-                        "检查更新",
-                        f"已更新到 v{self.pending_ver}，重启程序生效。现在重启吗？"):
-                    restart_app()
-                    self.on_close()
             else:
                 ver, text = res
-                self.pending_ver = ver
-                if messagebox.askyesno(
+                if not messagebox.askyesno(
                         "检查更新",
-                        f"发现新版本 v{ver}（当前 v{VERSION}），现在更新吗？"):
-                    if apply_update(text):
-                        done(True)
-                    else:
-                        messagebox.showerror("检查更新", "更新失败：文件写入被占用。")
+                        f"发现新版本 v{ver}（当前 v{VERSION}）。\n"
+                        "更新后程序将自动重启，是否继续？"):
+                    return
+                if apply_update(text):
+                    self.toast("检查更新",
+                               f"已更新到 v{ver}，程序即将自动重启…",
+                               duration_ms=1500)
+                    restart_app()
+                    self.on_close()
+                else:
+                    messagebox.showerror("检查更新",
+                                         "更新失败：文件写入被占用，"
+                                         "请手动重启后重试。")
         self._update_worker(done)
 
     def _update_worker(self, on_done):
