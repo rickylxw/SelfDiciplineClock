@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.2.5"
+VERSION = "1.2.6"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -1468,11 +1468,20 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         self.apply_ui_size()
 
     def refresh_todos(self):
-        """重建待办条目控件（每秒 refresh 都会调用，控件廉价重建）。"""
+        """待办区每秒都会被 refresh 调用；内容没变时直接跳过重建，
+        否则控件每秒销毁重建会导致闪烁。"""
         items_all = self.today_todos()
         visible = self.settings.get("todo_visible", True)
-        arrow = "▾" if visible else "▸"
         size = self.settings.get("font_size", 13)
+        sig = (visible, size,
+               len(items_all),
+               tuple((i.get("text", ""), bool(i.get("done")))
+                     for i in items_all[:5]))
+        if sig == getattr(self, "_todo_sig", None):
+            return
+        self._todo_sig = sig
+
+        arrow = "▾" if visible else "▸"
         item_font = max(9, size - 4)
         if items_all:
             undone = sum(1 for i in items_all if not i.get("done"))
