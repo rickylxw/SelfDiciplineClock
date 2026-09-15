@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.8"
+VERSION = "1.1.9"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -793,24 +793,25 @@ class TimeTracker(tk.Tk):
             else:
                 self.toast("时长提醒", f"「{cat}」已连续 1 小时。")
 
-    def _any_dialog_open(self):
-        """任何自有弹窗可见时返回 True（toast 除外）。"""
+    def _raise_dialogs_above_bar(self):
+        """把打开中的自有弹窗抬到悬浮条之上。
+
+        悬浮条每秒申明置顶会把自己顶到置顶窗口组最上层，压住
+        同样置顶的目标设置等窗口；申明之后立刻抬升弹窗，两者
+        各归其位：悬浮条在最上，弹窗在悬浮条之上。
+        """
         for w in self.dlg.winfo_children():
             if w.winfo_viewable():
-                return True
+                w.lift()
         for w in self.winfo_children():
-            if isinstance(w, tk.Toplevel) and w is not self.dlg \
-                    and not getattr(w, "_is_toast", False) \
+            if isinstance(w, tk.Toplevel) and not getattr(w, "_is_toast", False) \
                     and w.winfo_viewable():
-                return True
-        return False
+                w.lift()
 
     def refresh(self):
-        # 解锁/切换窗口后 Windows 可能让置顶失效，需要重申；
-        # 但每次申明都会把悬浮条顶到置顶窗口组最上层，弹窗打开时
-        # 必须暂停，否则目标设置等窗口每秒被压下去一次、无法点击
-        if not self._any_dialog_open():
-            self.attributes("-topmost", True)
+        # 解锁/切换窗口后 Windows 可能让置顶失效，每秒重申一次
+        self.attributes("-topmost", True)
+        self._raise_dialogs_above_bar()
         for cat in CATEGORIES:
             total = self.display_seconds(cat)
             if self.running_cat == cat:
