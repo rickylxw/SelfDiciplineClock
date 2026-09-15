@@ -380,7 +380,10 @@ class MainActivity : Activity() {
     // ---------------- 网络 ----------------
 
     private fun connect() {
+        // 容错解析：误带端口（10.0.2.2:8765）、http:// 前缀或路径都只保留主机地址
         val addr = hostEdit.text.toString().trim()
+            .removePrefix("https://").removePrefix("http://")
+            .substringBefore('/').substringBefore(':').trim()
         if (addr.isEmpty()) {
             Toast.makeText(this, "请输入主机 IP", Toast.LENGTH_SHORT).show()
             return
