@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -172,21 +172,46 @@ def version_gt(a, b):
         return False
 
 
-def fetch_latest(timeout=6):
-    """逐个尝试更新源，返回 (版本号, 最新脚本全文)；全部失败抛异常。"""
+def _latest_commit_sha(timeout=4):
+    """从 GitHub API 拿 main 最新提交号；失败返回 None。"""
     import urllib.request
+    url = f"https://api.github.com/repos/{_REPO}/commits/main"
+    req = urllib.request.Request(url, headers={"User-Agent": "desktop-clock-updater"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))["sha"]
+
+
+def fetch_latest(timeout=6):
+    """查询所有可达更新源，取版本号最大的一份。
+
+    单个 CDN 缓存过期（jsDelivr @main 可缓存数小时）不会再让
+    客户端误判"已是最新"；拿到提交号时优先用 @SHA 地址，天然无缓存。
+    """
+    import urllib.request
+    urls = list(UPDATE_URLS)
+    try:
+        sha = _latest_commit_sha()
+        if sha:
+            # 插到 raw 之后：官方源超时时立即走 SHA 精确地址
+            urls[1:1] = [u.replace("@main", f"@{sha}") for u in UPDATE_URLS[1:]]
+    except (OSError, KeyError, ValueError):
+        pass
+    best = None
     last_err = OSError("无可用更新源")
-    for url in UPDATE_URLS:
+    for url in urls:
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
                 text = resp.read().decode("utf-8")
             ver = parse_version(text)
             if not ver:
                 raise ValueError("远端文件缺少版本号")
-            return ver, text
+            if best is None or version_gt(ver, best[0]):
+                best = (ver, text)
         except (OSError, ValueError) as e:
             last_err = e
-    raise last_err
+    if best is None:
+        raise last_err
+    return best
 
 
 def apply_update(text):
