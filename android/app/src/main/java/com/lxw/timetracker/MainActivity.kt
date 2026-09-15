@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.RippleDrawable
@@ -19,11 +20,15 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.io.IOException
@@ -58,6 +63,13 @@ class MainActivity : Activity() {
     private lateinit var updateView: TextView
     private val timeViews = mutableMapOf<String, TextView>()
     private val cardViews = mutableMapOf<String, LinearLayout>()
+    private val bars = mutableMapOf<String, ProgressBar>()
+    private lateinit var todoList: LinearLayout
+    private lateinit var todoEdit: EditText
+
+    // 显示口径：false=累计（与电脑端默认一致），true=今日
+    private var showToday = false
+    private var lastTodosSig = ""
 
     // 主机地址/连接状态等在 SyncState（与后台服务共享）
 
@@ -93,6 +105,16 @@ class MainActivity : Activity() {
         hostEdit.setText(SyncState.host)
         findViewById<Button>(R.id.connect_btn).setOnClickListener { connect() }
         findViewById<Button>(R.id.update_btn).setOnClickListener { checkUpdate(manual = true) }
+        findViewById<Button>(R.id.mode_btn).setOnClickListener {
+            showToday = !showToday
+            findViewById<Button>(R.id.mode_btn).text =
+                if (showToday) "当前：今日" else "当前：累计"
+            render()
+        }
+        todoList = findViewById(R.id.todo_list)
+        todoEdit = findViewById(R.id.todo_edit)
+        todoEdit.setTextColor(Color.parseColor("#EEEEEE"))
+        findViewById<Button>(R.id.todo_add_btn).setOnClickListener { addTodo() }
         buildCards()
         // 常驻通知需要通知权限（Android 13+），拒绝不影响同步，只是通知不可见
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -129,11 +151,11 @@ class MainActivity : Activity() {
 
     private fun buildCards() {
         val container = findViewById<LinearLayout>(R.id.cards)
+        val density = resources.displayMetrics.density
         for (cat in CATS) {
             val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(36, 32, 36, 32)
+                orientation = LinearLayout.VERTICAL
+                setPadding(36, 28, 36, 24)
                 setBackgroundColor(Color.parseColor("#1F1F24"))
                 // 按压涟漪：让点击有立即可见的视觉响应
                 foreground = RippleDrawable(
@@ -144,6 +166,10 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { bottomMargin = 24 }
                 setOnClickListener { toggle(cat) }
+            }
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
             }
             val name = TextView(this).apply {
                 text = cat
@@ -160,11 +186,25 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT, 0.65f)
                 gravity = Gravity.END
             }
-            row.addView(name)
-            row.addView(time)
+            line.addView(name)
+            line.addView(time)
+            // 目标进度条：今日时长 / 每日目标（与电脑端口径一致）
+            val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 1000
+                progressTintList = ColorStateList.valueOf(Color.parseColor(COLORS[cat]))
+                progressBackgroundTintList =
+                    ColorStateList.valueOf(Color.parseColor("#333338"))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    (7 * density).toInt()
+                ).apply { topMargin = (9 * density).toInt() }
+            }
+            row.addView(line)
+            row.addView(bar)
             container.addView(row)
             timeViews[cat] = time
             cardViews[cat] = row
+            bars[cat] = bar
         }
     }
 
@@ -177,18 +217,28 @@ class MainActivity : Activity() {
     private fun render() {
         val liveTs = System.nanoTime() / 1_000_000_000.0
         for (cat in CATS) {
-            var seconds = SyncState.totals[cat] ?: 0L
             val live = if (SyncState.runningCat == cat)
                 (SyncState.liveStartElapsed + (liveTs - SyncState.liveStartTs)).toLong()
             else 0L
-            seconds += live
-            timeViews[cat]?.text = fmt(seconds)
+            val base = if (showToday) SyncState.todayTotals[cat] ?: 0L
+                       else SyncState.totals[cat] ?: 0L
+            timeViews[cat]?.text = fmt(base + live)
             if (live > 0L) {
                 timeViews[cat]?.setTextColor(Color.parseColor(COLORS[cat]!!))
                 cardViews[cat]?.setBackgroundColor(Color.parseColor("#26332A"))
             } else {
                 timeViews[cat]?.setTextColor(Color.parseColor("#BBBBBB"))
                 cardViews[cat]?.setBackgroundColor(Color.parseColor("#1F1F24"))
+            }
+            // 目标进度条固定按今日口径（与电脑端一致）
+            val goal = SyncState.goals[cat] ?: 0.0
+            val bar = bars[cat] ?: continue
+            if (goal > 0.0) {
+                val today = (SyncState.todayTotals[cat] ?: 0L) + live
+                bar.visibility = View.VISIBLE
+                bar.progress = ((today / goal).coerceIn(0.0, 1.0) * 1000).toInt()
+            } else {
+                bar.visibility = View.GONE
             }
         }
         val t = transientMsg
@@ -206,6 +256,109 @@ class MainActivity : Activity() {
             statusView.setTextColor(if (SyncState.connected)
                 Color.parseColor("#4CAF50") else Color.parseColor("#888888"))
         }
+        // 待办内容有变化才重建列表，避免每秒闪烁
+        val sig = SyncState.todosToday.toString()
+        if (sig != lastTodosSig) {
+            lastTodosSig = sig
+            rebuildTodos()
+        }
+    }
+
+    // ---------------- 今日待办 ----------------
+
+    private fun rebuildTodos() {
+        todoList.removeAllViews()
+        val list = SyncState.todosToday
+        val density = resources.displayMetrics.density
+        if (list.length() == 0) {
+            val empty = TextView(this).apply {
+                text = "今天还没有待办，在下面添加一条吧"
+                setTextColor(Color.parseColor("#666666"))
+                textSize = 14f
+                setPadding((4 * density).toInt(), (6 * density).toInt(), 0, 0)
+            }
+            todoList.addView(empty)
+            return
+        }
+        for (i in 0 until list.length()) {
+            val item = list.optJSONObject(i) ?: continue
+            val done = item.optBoolean("done")
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, (6 * density).toInt(), 0, (6 * density).toInt())
+                setOnClickListener { toggleTodo(i) }
+            }
+            CheckBox(this).apply {
+                isChecked = done
+                isClickable = false
+                buttonTintList = ColorStateList.valueOf(Color.parseColor("#4CAF50"))
+            }.let { row.addView(it) }
+            TextView(this).apply {
+                text = item.optString("text")
+                textSize = 15f
+                setTextColor(if (done) Color.parseColor("#666666")
+                             else Color.parseColor("#DDDDDD"))
+                if (done) paintFlags = paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
+                layoutParams = LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = (6 * density).toInt()
+                }
+            }.let { row.addView(it) }
+            todoList.addView(row)
+        }
+    }
+
+    /** 勾选/取消第 i 条待办：乐观更新界面，同时整表推送主机（时间戳新者胜）。 */
+    private fun toggleTodo(index: Int) {
+        val item = SyncState.todosToday.optJSONObject(index) ?: return
+        val updated = JSONObject(item.toString()).put("done", !item.optBoolean("done"))
+        applyAndPushTodo(index, updated)
+    }
+
+    private fun addTodo() {
+        val text = todoEdit.text.toString().trim()
+        if (text.isEmpty()) return
+        applyAndPushTodo(SyncState.todosToday.length(),
+            JSONObject().put("text", text).put("done", false))
+        todoEdit.setText("")
+    }
+
+    /** 把修改写入待办表（今天不存在则按携入规则物化今天），乐观刷新并推送。 */
+    private fun applyAndPushTodo(index: Int, newItem: JSONObject) {
+        val todayKey = SyncState.todayStr()
+        // 基于最新展示列表生成新今日列表
+        val list = JSONArray()
+        for (i in 0 until SyncState.todosToday.length()) {
+            list.put(if (i == index) newItem
+                     else JSONObject(SyncState.todosToday.optJSONObject(i)?.toString() ?: "{}"))
+        }
+        // 整表替换语义：必须基于完整表修改，否则会丢掉其他日期的待办
+        val all = JSONObject(SyncState.todosAll.toString())
+        all.put(todayKey, list)
+        SyncState.todosToday = list
+        SyncState.todosAll = all
+        lastTodosSig = ""          // 强制下次 render 重建
+        render()
+        pushTodos(all)
+    }
+
+    private fun pushTodos(all: JSONObject) {
+        if (SyncState.host.isEmpty()) return
+        SyncState.lastTouchTs = System.nanoTime() / 1_000_000_000.0
+        val ts = System.currentTimeMillis() / 1000.0
+        Thread {
+            try {
+                httpPost("http://${SyncState.host}:$PORT/merge",
+                    """{"todos":$all,"todos_ts":$ts,"user_idle":0}""")
+                SyncState.todosPushedTs = System.nanoTime() / 1_000_000_000.0
+                runOnUiThread {
+                    startForegroundService(Intent(this, SyncService::class.java))
+                }
+            } catch (e: Exception) {
+                runOnUiThread { flashStatus("❌ 待办同步失败，主机不可达", 4.0) }
+            }
+        }.start()
     }
 
     // ---------------- 自动更新 ----------------
