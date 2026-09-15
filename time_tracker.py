@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -463,6 +463,7 @@ class TimeTracker(tk.Tk):
         # 避免无边框悬浮条导致的弹窗被压到下层的问题。
         self.dlg = tk.Toplevel(self)
         self.dlg.withdraw()
+        self._topmost_done = set()  # 已打上置顶的弹窗，避免重复抢层级
         self.build_ui()
         self.quote_loop()
         self.update_loop()
@@ -793,28 +794,33 @@ class TimeTracker(tk.Tk):
             else:
                 self.toast("时长提醒", f"「{cat}」已连续 1 小时。")
 
-    def _raise_dialogs_above_bar(self):
-        """维持用户定义的图层顺序（上→下）：
+    def _apply_popup_topmost(self):
+        """应用新弹出的窗口一次性打上置顶，之后不再动它们的层级。
 
-        提醒气泡 > 弹窗（待办输入框/历史统计/目标设置）> 悬浮条。
-        悬浮条申明置顶会把自己顶到置顶窗口组最上层，因此申明后
-        按层次重新抬升：先抬弹窗，最后抬气泡（后抬者在上）。
-        主菜单是系统原生弹出菜单，Windows 保证其显示在最上层。
+        弹窗进入置顶窗口组后天然压住悬浮条（组内后插入者在先），
+        无需每秒抬升；已处理过的窗口跳过，避免层级抖动。
         """
-        for w in self.dlg.winfo_children():
-            if w.winfo_viewable():
+        for w in list(self.dlg.winfo_children()) + list(self.winfo_children()):
+            if isinstance(w, tk.Toplevel) and w.winfo_viewable() \
+                    and id(w) not in self._topmost_done:
                 w.attributes("-topmost", True)
-                w.lift()
-        for w in self.winfo_children():
-            if isinstance(w, tk.Toplevel) and getattr(w, "_is_toast", False) \
-                    and w.winfo_viewable():
-                w.attributes("-topmost", True)
-                w.lift()
+                self._topmost_done.add(id(w))
+
+    def _popup_visible(self):
+        """本应用有任何弹窗/菜单打开时为真，此时悬浮条不重申置顶。"""
+        if self.menu.winfo_ismapped():
+            return True
+        for w in list(self.dlg.winfo_children()) + list(self.winfo_children()):
+            if isinstance(w, tk.Toplevel) and w.winfo_viewable():
+                return True
+        return False
 
     def refresh(self):
-        # 解锁/切换窗口后 Windows 可能让置顶失效，每秒重申一次
-        self.attributes("-topmost", True)
-        self._raise_dialogs_above_bar()
+        # 悬浮条置顶只用于压住其他应用；本应用有弹窗/菜单打开时
+        # 暂停重申，让后弹出的东西稳定待在最上层，互不打架
+        self._apply_popup_topmost()
+        if not self._popup_visible():
+            self.attributes("-topmost", True)
         for cat in CATEGORIES:
             total = self.display_seconds(cat)
             if self.running_cat == cat:
