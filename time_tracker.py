@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -523,6 +523,11 @@ class TimeTracker(tk.Tk):
             canvas.bind("<Configure>",
                         lambda e, cv=canvas: self.redraw_bar(cv))
             self.bars[cat] = canvas
+
+        # 进度条口径标识：条子按「今日」时长相对每日目标填充
+        self.today_tag = tk.Label(grid, text="今日", font=("微软雅黑", 8),
+                                  bg=BG, fg="#666666")
+        self.today_tag.grid(row=1, column=0, sticky="w", padx=(2, 4))
 
         # 底部：状态 / 名言行
         self.status = tk.Label(bar, text="", font=("微软雅黑", 9),
