@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.4"
+VERSION = "1.1.5"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -594,11 +594,13 @@ class TimeTracker(tk.Tk):
             canvas.config(height=bar_h)
         w = max(360, size * 36)
         h = size * 3 + bar_h + 18
+        # 标题行始终保留高度（折叠时的召回手柄），条目区仅展开时计入
+        h += 18
         if self.settings.get("todo_visible"):
             rows = min(5, len(self.today_todos()))
             if len(self.today_todos()) > 5:
                 rows = 6  # 还有「更多」提示行
-            h += 18 + 18 * max(rows, 1)
+            h += 18 * max(rows, 1)
         x, y = self.winfo_x(), self.winfo_y()
         self.geometry(f"{w}x{h}+{x}+{y}")
         self.update_idletasks()
