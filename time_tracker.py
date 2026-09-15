@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.7"
+VERSION = "1.1.8"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -459,17 +459,16 @@ class TimeTracker(tk.Tk):
             self.start_host()
 
         self.quote = QUOTES[0]
+        # 对话框宿主：正常有边框窗口（隐藏）。所有弹窗挂它下面，
+        # 避免无边框悬浮条导致的弹窗被压到下层的问题。
+        self.dlg = tk.Toplevel(self)
+        self.dlg.withdraw()
         self.build_ui()
         self.quote_loop()
         self.update_loop()
         self.hotkey_loop()
         self.sync_loop()
         self.after(15000, self.silent_update_check)
-
-        # 对话框宿主：正常有边框窗口（隐藏）。所有弹窗挂它下面，
-        # 避免无边框悬浮条导致的弹窗被压到下层的问题。
-        self.dlg = tk.Toplevel(self)
-        self.dlg.withdraw()
 
     def position_window(self):
         w, h = 480, 62
@@ -794,9 +793,24 @@ class TimeTracker(tk.Tk):
             else:
                 self.toast("时长提醒", f"「{cat}」已连续 1 小时。")
 
+    def _any_dialog_open(self):
+        """任何自有弹窗可见时返回 True（toast 除外）。"""
+        for w in self.dlg.winfo_children():
+            if w.winfo_viewable():
+                return True
+        for w in self.winfo_children():
+            if isinstance(w, tk.Toplevel) and w is not self.dlg \
+                    and not getattr(w, "_is_toast", False) \
+                    and w.winfo_viewable():
+                return True
+        return False
+
     def refresh(self):
-        # 解锁/切换窗口后 Windows 可能让置顶失效，每秒重申一次
-        self.attributes("-topmost", True)
+        # 解锁/切换窗口后 Windows 可能让置顶失效，需要重申；
+        # 但每次申明都会把悬浮条顶到置顶窗口组最上层，弹窗打开时
+        # 必须暂停，否则目标设置等窗口每秒被压下去一次、无法点击
+        if not self._any_dialog_open():
+            self.attributes("-topmost", True)
         for cat in CATEGORIES:
             total = self.display_seconds(cat)
             if self.running_cat == cat:
@@ -930,7 +944,7 @@ class TimeTracker(tk.Tk):
                 self.autostart_item.set(not enable)  # 失败则回退显示
 
     def edit_goals(self):
-        win = tk.Toplevel(self)
+        win = tk.Toplevel(self.dlg)  # 挂对话框宿主，脱离悬浮条的置顶组
         win.title("每日目标设置")
         win.attributes("-topmost", True)
         win.lift()
@@ -967,6 +981,7 @@ class TimeTracker(tk.Tk):
 
     def toast(self, title, message, duration_ms=8000):
         win = tk.Toplevel(self)
+        win._is_toast = True  # 不算弹窗，不阻止悬浮条重申置顶
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.92)
@@ -996,7 +1011,7 @@ class TimeTracker(tk.Tk):
         return weeks
 
     def show_history(self):
-        win = tk.Toplevel(self)
+        win = tk.Toplevel(self.dlg)  # 挂对话框宿主，脱离悬浮条的置顶组
         win.title(f"历史统计 · v{VERSION}")
         win.attributes("-topmost", True)
         win.lift()
