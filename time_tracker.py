@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -476,6 +476,8 @@ class TimeTracker(tk.Tk):
 
         # 右键菜单
         self.menu = tk.Menu(self, tearoff=0)
+        self.menu.add_command(label=f"⏱ 时长记录器 v{VERSION}",
+                              state="disabled")
         self.menu.add_command(label="历史统计", command=self.show_history)
         self.menu.add_command(label="导出 CSV 报表", command=self.export_csv)
         self.menu.add_command(label="导出 HTML 周报", command=self.export_html)
@@ -925,7 +927,7 @@ class TimeTracker(tk.Tk):
 
     def show_history(self):
         win = tk.Toplevel(self)
-        win.title("历史统计")
+        win.title(f"历史统计 · v{VERSION}")
         win.attributes("-topmost", True)
 
         nb = ttk.Notebook(win)
