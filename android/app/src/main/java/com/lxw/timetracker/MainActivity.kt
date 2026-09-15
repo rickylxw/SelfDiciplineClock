@@ -459,7 +459,7 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun httpGet(url: String, timeout: Int = 2500): String {
+    private fun httpGet(url: String, timeout: Int = 4000): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = timeout
         conn.readTimeout = timeout
@@ -473,8 +473,8 @@ class MainActivity : Activity() {
     private fun httpPost(url: String, body: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
-        conn.connectTimeout = 2500
-        conn.readTimeout = 2500
+        conn.connectTimeout = 4000
+        conn.readTimeout = 4000
         conn.doOutput = true
         conn.setRequestProperty("Content-Type", "application/json")
         try {
