@@ -111,6 +111,9 @@ class MainActivity : Activity() {
                 if (showToday) "当前：今日" else "当前：累计"
             render()
         }
+        findViewById<Button>(R.id.pom_btn).setOnClickListener {
+            togglePomodoro(!SyncState.pomEnabled)
+        }
         todoList = findViewById(R.id.todo_list)
         todoEdit = findViewById(R.id.todo_edit)
         todoEdit.setTextColor(Color.parseColor("#EEEEEE"))
@@ -241,16 +244,28 @@ class MainActivity : Activity() {
                 bar.visibility = View.GONE
             }
         }
+        findViewById<Button>(R.id.pom_btn).text =
+            if (SyncState.pomEnabled) "🍅 番茄钟：开" else "🍅 番茄钟：关"
         val t = transientMsg
         if (t != null && liveTs < transientUntil) {
             statusView.text = t
             statusView.setTextColor(Color.parseColor("#FFC107"))
         } else {
+            val nowEpoch = System.currentTimeMillis() / 1000.0
+            val remain = (SyncState.pomEnd - nowEpoch).coerceAtLeast(0.0)
+            val pomTag = when {
+                SyncState.pomState == "focus" -> " · 🍅 剩余 ${mmss(remain)}"
+                SyncState.pomState == "break" -> " · ☕ 休息剩余 ${mmss(remain)}"
+                else -> ""
+            }
             statusView.text = when {
                 !SyncState.connected -> if (SyncState.host.isEmpty())
                     "未连接，请填写主机 IP"
                     else "连接 ${SyncState.host} 失败，点「连接」重试"
-                SyncState.runningCat != null -> "● 主机正在计时：${SyncState.runningCat}"
+                SyncState.pomState == "break" ->
+                    "☕ 休息中，剩余 ${mmss(remain)}，结束后自动开始专注"
+                SyncState.runningCat != null ->
+                    "● 主机正在计时：${SyncState.runningCat}$pomTag"
                 else -> "已连接 ${SyncState.host} · 空闲"
             }
             statusView.setTextColor(if (SyncState.connected)
@@ -573,5 +588,34 @@ class MainActivity : Activity() {
         val m = seconds % 3600 / 60
         val s = seconds % 60
         return String.format(Locale.CHINA, "%02d:%02d:%02d", h, m, s)
+    }
+
+    private fun mmss(seconds: Double): String {
+        val total = seconds.toInt()
+        return String.format(Locale.CHINA, "%02d:%02d", total / 60, total % 60)
+    }
+
+    /** 远程开关主机端番茄钟；主机空闲时开启会自动开始「工作」专注。 */
+    private fun togglePomodoro(on: Boolean) {
+        if (!SyncState.connected) {
+            Toast.makeText(this, "请先连接主机", Toast.LENGTH_SHORT).show()
+            return
+        }
+        SyncState.lastTouchTs = System.nanoTime() / 1_000_000_000.0
+        flashStatus(if (on) "⏳ 正在开启番茄钟…" else "⏳ 正在关闭番茄钟…")
+        Thread {
+            try {
+                httpPost("http://${SyncState.host}:$PORT/control",
+                    """{"action":"pomodoro","on":$on}""")
+                runOnUiThread {
+                    startForegroundService(Intent(this, SyncService::class.java))
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    flashStatus("❌ 主机不可达，操作未执行", 4.0)
+                    Toast.makeText(this, "主机不可达", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 }

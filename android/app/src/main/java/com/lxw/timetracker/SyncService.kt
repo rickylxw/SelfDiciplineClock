@@ -33,6 +33,11 @@ object SyncState {
     @Volatile var todosToday = org.json.JSONArray()
     @Volatile var todosPushedTs = 0.0      // 手机端最近一次推送待办的时刻，短暂抑制回写覆盖
 
+    // 番茄钟：主机纪元秒制的阶段结束时刻；state 为 null 表示空闲
+    @Volatile var pomEnabled = false
+    @Volatile var pomState: String? = null
+    @Volatile var pomEnd = 0.0
+
     fun todayStr(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA)
             .format(java.util.Date())
@@ -147,6 +152,11 @@ class SyncService : Service() {
                 SyncState.goals = goals
                 SyncState.runningCat = rc
                 SyncState.connected = true
+                val pom = st.optJSONObject("pom")
+                SyncState.pomEnabled = pom?.optBoolean("enabled", false) ?: false
+                SyncState.pomState = if (pom == null || pom.isNull("state")) null
+                                     else pom.optString("state")
+                SyncState.pomEnd = pom?.optDouble("end", 0.0) ?: 0.0
                 if (rc != null) {
                     SyncState.liveStartElapsed = st.optDouble("elapsed", 0.0)
                     SyncState.liveStartTs = System.nanoTime() / 1_000_000_000.0

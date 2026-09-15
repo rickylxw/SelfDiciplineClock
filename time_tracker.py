@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -307,7 +307,10 @@ class SyncServer:
                                 "goals": a.settings.get("goals", {}),
                                 "goals_ts": a.settings.get("goals_updated_ts", 0),
                                 "todos": a.data.get("todos", {}),
-                                "todos_ts": a.settings.get("todos_updated_ts", 0)})
+                                "todos_ts": a.settings.get("todos_updated_ts", 0),
+                                "pom": {"enabled": a.pom_var.get(),
+                                        "state": a.pom_state,
+                                        "end": a.pom_end_ts}})
                 else:
                     self.send_error(404)
 
@@ -1391,12 +1394,35 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 cat = payload.get("cat")
                 if cat in CATEGORIES:
                     self.toggle(cat)
+            elif kind == "control" and payload.get("action") == "pomodoro":
+                self.remote_set_pomodoro(bool(payload.get("on")))
 
     def note_client_activity(self, idle_seconds_value):
         """客户端报告了用户活跃：其空闲时长小于阈值即视为人在。"""
         if isinstance(idle_seconds_value, (int, float)) \
                 and 0 <= idle_seconds_value < IDLE_PAUSE_SECONDS:
             self.last_client_active_ts = datetime.now().timestamp()
+
+    def remote_set_pomodoro(self, on):
+        """手机端远程开关番茄钟，行为与本地菜单开关保持一致。"""
+        if on and not self.pom_var.get():
+            self.pom_var.set(True)
+            self.settings["pomodoro"] = True
+            self.save()
+            if not self.running_cat:
+                self.toggle(CATEGORIES[0])
+            if self.pom_state is None and self.running_cat:
+                self.pom_state = "focus"
+                self.pom_end_ts = datetime.now().timestamp() + POMODORO_FOCUS
+            self.refresh()
+            self.toast("番茄钟", "手机端已开启番茄钟：25 分钟专注 + 5 分钟休息。")
+        elif not on and self.pom_var.get():
+            self.pom_var.set(False)
+            self.settings["pomodoro"] = False
+            self.pom_state = None
+            self.save()
+            self.refresh()
+            self.toast("番茄钟", "手机端已关闭番茄钟。")
 
     def sync_now(self):
         """手动双向同步一次。"""
