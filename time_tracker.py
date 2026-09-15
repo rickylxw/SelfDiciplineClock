@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.5"
+VERSION = "1.1.6"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -532,6 +532,9 @@ class TimeTracker(tk.Tk):
         self.todo_header.bind("<Button-1>",
                               lambda e: self.toggle_todo_visible())
         self.todo_body = tk.Frame(bar, bg=BG)
+        # 空列表/折叠时没有条目可右键，标题行/待办区兜底提供添加入口
+        self.todo_header.bind("<Button-3>", self.todo_area_menu)
+        self.todo_body.bind("<Button-3>", self.todo_area_menu)
         # 是否显示由 refresh_todos() 按 todo_visible 决定
         self.todo_items = []          # [(var, label)] 保持引用防 GC
 
@@ -543,6 +546,7 @@ class TimeTracker(tk.Tk):
         self.menu.add_command(label="导出 CSV 报表", command=self.export_csv)
         self.menu.add_command(label="导出 HTML 周报", command=self.export_html)
         self.menu.add_command(label="每日目标设置…", command=self.edit_goals)
+        self.menu.add_command(label="添加待办…", command=self.add_todo_item)
         self.menu.add_separator()
         self.pom_var = tk.BooleanVar(value=self.settings["pomodoro"])
         self.menu.add_checkbutton(label="番茄钟模式（25 分钟专注）",
@@ -593,15 +597,11 @@ class TimeTracker(tk.Tk):
         for canvas in self.bars.values():
             canvas.config(height=bar_h)
         w = max(360, size * 36)
-        h = size * 3 + bar_h + 18
-        # 标题行始终保留高度（折叠时的召回手柄），条目区仅展开时计入
-        h += 18
-        if self.settings.get("todo_visible"):
-            rows = min(5, len(self.today_todos()))
-            if len(self.today_todos()) > 5:
-                rows = 6  # 还有「更多」提示行
-            h += 18 * max(rows, 1)
         x, y = self.winfo_x(), self.winfo_y()
+        # 高度不手算：让 Tk 按全部子控件的实际请求高度自适应，
+        # 待办行数增减、字号缩放都不会裁切或留白
+        self.update_idletasks()
+        h = max(self.winfo_reqheight(), int(size * 3.2) + bar_h + 26)
         self.geometry(f"{w}x{h}+{x}+{y}")
         self.update_idletasks()
         self.refresh()
@@ -1436,6 +1436,8 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         items_all = self.today_todos()
         visible = self.settings.get("todo_visible", True)
         arrow = "▾" if visible else "▸"
+        size = self.settings.get("font_size", 13)
+        item_font = max(9, size - 4)
         if items_all:
             undone = sum(1 for i in items_all if not i.get("done"))
             self.todo_header.config(text=f"{arrow} 待办 {undone}/{len(items_all)}")
@@ -1455,9 +1457,10 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             row.pack(fill="x")
             var = tk.BooleanVar(value=item.get("done", False))
             cb = tk.Checkbutton(row, variable=var, bg=BG, activebackground=BG,
+                                font=("微软雅黑", item_font),
                                 command=lambda i=idx: self.toggle_todo_done(i))
             cb.pack(side="left")
-            txt = tk.Label(row, text=item["text"], font=("微软雅黑", 9),
+            txt = tk.Label(row, text=item["text"], font=("微软雅黑", item_font),
                            bg=BG, anchor="w", cursor="hand2")
             txt.pack(side="left", fill="x")
             self._style_todo_label(txt, var.get())
@@ -1470,12 +1473,14 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         if len(items_all) > 5:
             tk.Label(self.todo_body,
                      text=f"…还有 {len(items_all) - 5} 条（右键管理）",
-                     font=("微软雅黑", 8), bg=BG, fg="#777777",
+                     font=("微软雅黑", item_font), bg=BG, fg="#777777",
                      anchor="w").pack(fill="x")
 
     def _style_todo_label(self, label, done):
+        item_font = max(9, self.settings.get("font_size", 13) - 4)
         label.config(fg="#5A5A5A" if done else "#CCCCCC",
-                     font=("微软雅黑", 9, "overstrike" if done else "normal"))
+                     font=("微软雅黑", item_font,
+                           "overstrike" if done else "normal"))
 
     def _todo_touch(self):
         self.settings["todos_updated_ts"] = datetime.now().timestamp()
@@ -1495,6 +1500,15 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         menu.add_command(label="编辑…", command=lambda: self.edit_todo_item(idx))
         menu.add_command(label="删除", command=lambda: self.delete_todo_item(idx))
         menu.add_command(label="清除已完成", command=self.clear_done_todos)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def todo_area_menu(self, event):
+        """待办区/标题行的右键菜单（无条目时也能添加）。"""
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="添加待办…", command=self.add_todo_item)
+        menu.add_command(label="清除已完成", command=self.clear_done_todos)
+        menu.add_separator()
+        menu.add_command(label="展开/收起", command=self.toggle_todo_visible)
         menu.tk_popup(event.x_root, event.y_root)
 
     def add_todo_item(self):
