@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.2.6"
+VERSION = "1.2.7"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -1467,59 +1467,75 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         self.refresh_todos()
         self.apply_ui_size()
 
+    def _todo_pool(self):
+        """待办区 5 个固定槽位控件：只创建一次，之后原地更新，
+        任何情况下都不销毁重建，保证零闪烁。槽位号即条目序号。"""
+        if getattr(self, "_todo_rows", None):
+            return self._todo_rows
+        size = self.settings.get("font_size", 13)
+        item_font = max(9, size - 4)
+        self._todo_rows = []
+        for idx in range(5):
+            row = tk.Frame(self.todo_body, bg=BG)
+            var = tk.BooleanVar(value=False)
+            cb = tk.Checkbutton(row, variable=var, bg=BG, activebackground=BG,
+                                font=("微软雅黑", item_font),
+                                command=lambda i=idx: self.toggle_todo_done(i))
+            cb.pack(side="left")
+            txt = tk.Label(row, text="", font=("微软雅黑", item_font),
+                           bg=BG, anchor="w", cursor="hand2")
+            txt.pack(side="left", fill="x")
+            for w in (row, cb, txt):
+                w.bind("<Button-3>", lambda e, i=idx: self.todo_menu_popup(e, i))
+            txt.bind("<Double-Button-1>",
+                     lambda e, i=idx: self.edit_todo_item(i))
+            self._todo_rows.append((var, cb, txt, row))
+        self._todo_more = tk.Label(self.todo_body, text="",
+                                   font=("微软雅黑", max(8, size - 5)),
+                                   bg=BG, fg="#777777", anchor="w")
+        return self._todo_rows
+
     def refresh_todos(self):
-        """待办区每秒都会被 refresh 调用；内容没变时直接跳过重建，
-        否则控件每秒销毁重建会导致闪烁。"""
+        """待办区每秒被 refresh 调用；固定槽位原地更新，零闪烁。"""
         items_all = self.today_todos()
         visible = self.settings.get("todo_visible", True)
         size = self.settings.get("font_size", 13)
-        sig = (visible, size,
-               len(items_all),
-               tuple((i.get("text", ""), bool(i.get("done")))
-                     for i in items_all[:5]))
-        if sig == getattr(self, "_todo_sig", None):
-            return
-        self._todo_sig = sig
-
-        arrow = "▾" if visible else "▸"
         item_font = max(9, size - 4)
+        arrow = "▾" if visible else "▸"
         if items_all:
             undone = sum(1 for i in items_all if not i.get("done"))
             self.todo_header.config(text=f"{arrow} 待办 {undone}/{len(items_all)}")
         else:
             self.todo_header.config(text=f"{arrow} 待办（右键添加）")
 
-        for w in self.todo_body.winfo_children():
-            w.destroy()
-        self.todo_items = []
         if not visible:
             self.todo_body.pack_forget()
             return
         self.todo_body.pack(fill="x", padx=10, pady=(0, 4))
 
-        for idx, item in enumerate(items_all[:5]):
-            row = tk.Frame(self.todo_body, bg=BG)
-            row.pack(fill="x")
-            var = tk.BooleanVar(value=item.get("done", False))
-            cb = tk.Checkbutton(row, variable=var, bg=BG, activebackground=BG,
-                                font=("微软雅黑", item_font),
-                                command=lambda i=idx: self.toggle_todo_done(i))
-            cb.pack(side="left")
-            txt = tk.Label(row, text=item["text"], font=("微软雅黑", item_font),
-                           bg=BG, anchor="w", cursor="hand2")
-            txt.pack(side="left", fill="x")
-            self._style_todo_label(txt, var.get())
-            for w in (row, cb, txt):
-                w.bind("<Button-3>", lambda e, i=idx: self.todo_menu_popup(e, i))
-            txt.bind("<Double-Button-1>",
-                     lambda e, i=idx: self.edit_todo_item(i))
-            self.todo_items.append((var, txt))
+        rows = self._todo_pool()
+        shown = items_all[:5]
+        for i, (var, cb, txt, row) in enumerate(rows):
+            if i < len(shown):
+                item = shown[i]
+                done = bool(item.get("done", False))
+                var.set(done)  # 程序设值不触发 command，不会造成递归
+                cb.config(font=("微软雅黑", item_font))
+                txt.config(text=item.get("text", ""))
+                self._style_todo_label(txt, done)
+                if not row.winfo_manager():
+                    row.pack(fill="x")
+            else:
+                row.pack_forget()
 
         if len(items_all) > 5:
-            tk.Label(self.todo_body,
-                     text=f"…还有 {len(items_all) - 5} 条（右键管理）",
-                     font=("微软雅黑", item_font), bg=BG, fg="#777777",
-                     anchor="w").pack(fill="x")
+            self._todo_more.config(
+                text=f"…还有 {len(items_all) - 5} 条（右键管理）",
+                font=("微软雅黑", max(8, size - 5)))
+            if not self._todo_more.winfo_manager():
+                self._todo_more.pack(fill="x")
+        else:
+            self._todo_more.pack_forget()
 
     def _style_todo_label(self, label, done):
         item_font = max(9, self.settings.get("font_size", 13) - 4)
