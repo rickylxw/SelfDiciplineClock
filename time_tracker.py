@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.9"
+VERSION = "1.2.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -796,16 +796,19 @@ class TimeTracker(tk.Tk):
     def _raise_dialogs_above_bar(self):
         """把打开中的自有弹窗抬到悬浮条之上。
 
-        悬浮条每秒申明置顶会把自己顶到置顶窗口组最上层，压住
-        同样置顶的目标设置等窗口；申明之后立刻抬升弹窗，两者
-        各归其位：悬浮条在最上，弹窗在悬浮条之上。
+        悬浮条每秒申明置顶会把自己顶到置顶窗口组最上层。输入框
+        类弹窗本身不是置顶窗口，光 lift 只能到普通组顶部、仍在
+        置顶的悬浮条之下；必须先给它们也打上置顶属性进入置顶组，
+        再 lift，才能稳定排在悬浮条上面。
         """
         for w in self.dlg.winfo_children():
             if w.winfo_viewable():
+                w.attributes("-topmost", True)
                 w.lift()
         for w in self.winfo_children():
             if isinstance(w, tk.Toplevel) and not getattr(w, "_is_toast", False) \
                     and w.winfo_viewable():
+                w.attributes("-topmost", True)
                 w.lift()
 
     def refresh(self):
