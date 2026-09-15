@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.6"
+VERSION = "1.1.7"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -419,7 +419,7 @@ def set_autostart(enable):
                 except FileNotFoundError:
                     pass
     except OSError as e:
-        messagebox.showerror("开机自启", f"设置失败：{e}")
+        messagebox.showerror("开机自启", f"设置失败：{e}", parent=self.dlg)
         return False
     return True
 
@@ -465,6 +465,11 @@ class TimeTracker(tk.Tk):
         self.hotkey_loop()
         self.sync_loop()
         self.after(15000, self.silent_update_check)
+
+        # 对话框宿主：正常有边框窗口（隐藏）。所有弹窗挂它下面，
+        # 避免无边框悬浮条导致的弹窗被压到下层的问题。
+        self.dlg = tk.Toplevel(self)
+        self.dlg.withdraw()
 
     def position_window(self):
         w, h = 480, 62
@@ -928,6 +933,8 @@ class TimeTracker(tk.Tk):
         win = tk.Toplevel(self)
         win.title("每日目标设置")
         win.attributes("-topmost", True)
+        win.lift()
+        win.focus_force()
         win.resizable(False, False)
         entries = {}
         for i, cat in enumerate(CATEGORIES):
@@ -992,6 +999,8 @@ class TimeTracker(tk.Tk):
         win = tk.Toplevel(self)
         win.title(f"历史统计 · v{VERSION}")
         win.attributes("-topmost", True)
+        win.lift()
+        win.focus_force()
 
         nb = ttk.Notebook(win)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
@@ -1045,10 +1054,10 @@ class TimeTracker(tk.Tk):
 
     def export_csv(self):
         if not self.data["daily"]:
-            messagebox.showinfo("导出报表", "还没有任何记录可导出。")
+            messagebox.showinfo("导出报表", "还没有任何记录可导出。", parent=self.dlg)
             return
         path = filedialog.asksaveasfilename(
-            parent=self, title="导出 CSV 报表",
+            parent=self.dlg, title="导出 CSV 报表",
             initialfile=f"时长报表_{today_str()}.csv",
             defaultextension=".csv",
             filetypes=[("CSV 文件", "*.csv")])
@@ -1072,16 +1081,16 @@ class TimeTracker(tk.Tk):
                             ",".join(self.fmt(w[c]) for c in CATEGORIES) +
                             "," + self.fmt(t) + "\n")
         except OSError as e:
-            messagebox.showerror("导出报表", f"导出失败：{e}")
+            messagebox.showerror("导出报表", f"导出失败：{e}", parent=self.dlg)
             return
-        messagebox.showinfo("导出报表", f"已导出到：\n{path}")
+        messagebox.showinfo("导出报表", f"已导出到：\n{path}", parent=self.dlg)
 
     def export_html(self):
         if not self.data["daily"]:
-            messagebox.showinfo("导出周报", "还没有任何记录可导出。")
+            messagebox.showinfo("导出周报", "还没有任何记录可导出。", parent=self.dlg)
             return
         path = filedialog.asksaveasfilename(
-            parent=self, title="导出 HTML 周报",
+            parent=self.dlg, title="导出 HTML 周报",
             initialfile=f"时长周报_{today_str()}.html",
             defaultextension=".html",
             filetypes=[("HTML 文件", "*.html")])
@@ -1090,9 +1099,9 @@ class TimeTracker(tk.Tk):
         try:
             self.write_html(path)
         except OSError as e:
-            messagebox.showerror("导出周报", f"导出失败：{e}")
+            messagebox.showerror("导出周报", f"导出失败：{e}", parent=self.dlg)
             return
-        messagebox.showinfo("导出周报", f"已导出到：\n{path}")
+        messagebox.showinfo("导出周报", f"已导出到：\n{path}", parent=self.dlg)
 
     def write_html(self, path):
         days = sorted(self.data["daily"].items())[-14:]  # 最近 14 天
@@ -1179,7 +1188,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             self.sync_server = SyncServer(self)
         except OSError as e:
             messagebox.showerror("局域网同步",
-                                 f"主机服务启动失败（端口 {SYNC_PORT} 可能被占用）：\n{e}")
+                                 f"主机服务启动失败（端口 {SYNC_PORT} 可能被占用）：\n{e}", parent=self.dlg)
             self.host_var.set(False)
             self.settings["sync_host"] = False
             self.save()
@@ -1196,7 +1205,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             if self.settings.get("host_addr"):
                 self.settings["host_addr"] = ""
                 self.save()
-                messagebox.showinfo("局域网同步", "已切换为主机模式。")
+                messagebox.showinfo("局域网同步", "已切换为主机模式。", parent=self.dlg)
             self.start_host()
             self.toast("局域网同步",
                        f"主机模式已开启。\n本机 IP：{lan_ip()}"
@@ -1208,12 +1217,12 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
     def connect_host(self):
         addr = simpledialog.askstring(
             "连接主机", "输入主机在局域网中的 IP 地址：",
-            initialvalue=self.settings.get("host_addr", ""), parent=self)
+            initialvalue=self.settings.get("host_addr", ""), parent=self.dlg)
         if not addr:
             return
         addr = addr.strip()
         if self.sync_server:
-            messagebox.showwarning("连接主机", "本机是主机，不能连接其他主机。")
+            messagebox.showwarning("连接主机", "本机是主机，不能连接其他主机。", parent=self.dlg)
             return
         # 试连一次确认可达
         try:
@@ -1221,7 +1230,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         except OSError:
             messagebox.showerror("连接主机",
                                  f"无法连接 {addr}:{SYNC_PORT}，"
-                                 "请确认对方已开启「作为主机共享」且防火墙放行。")
+                                 "请确认对方已开启「作为主机共享」且防火墙放行。", parent=self.dlg)
             return
         self.settings["host_addr"] = addr
         self.save()
@@ -1343,14 +1352,14 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 self.apply_remote_todos(st.get("todos"), st.get("todos_ts"))
                 self.save()
                 self.refresh()
-                messagebox.showinfo("立即同步", f"已与 {addr} 完成双向同步。")
+                messagebox.showinfo("立即同步", f"已与 {addr} 完成双向同步。", parent=self.dlg)
             except OSError:
-                messagebox.showerror("立即同步", f"无法连接 {addr}。")
+                messagebox.showerror("立即同步", f"无法连接 {addr}。", parent=self.dlg)
         elif self.sync_server:
             messagebox.showinfo("立即同步",
-                                "主机模式无需手动同步，客户端会自动推送合并。")
+                                "主机模式无需手动同步，客户端会自动推送合并。", parent=self.dlg)
         else:
-            messagebox.showinfo("立即同步", "请先通过「连接主机…」指定主机 IP。")
+            messagebox.showinfo("立即同步", "请先通过「连接主机…」指定主机 IP。", parent=self.dlg)
 
     def remote_toggle(self, cat):
         try:
@@ -1359,7 +1368,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         except OSError:
             messagebox.showerror("局域网同步",
                                  "主机不可达，操作未执行。"
-                                 "\n可用「立即同步」前先检查网络。")
+                                 "\n可用「立即同步」前先检查网络。", parent=self.dlg)
 
     # ---------------- 自动更新 ----------------
 
@@ -1376,16 +1385,16 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         def done(res):
             if res is None:
                 messagebox.showinfo("检查更新", "检查失败：无法访问 GitHub，"
-                                    "请检查网络。")
+                                    "请检查网络。", parent=self.dlg)
             elif not res:
                 messagebox.showinfo("检查更新",
-                                    f"已是最新版本 v{VERSION}。")
+                                    f"已是最新版本 v{VERSION}。", parent=self.dlg)
             else:
                 ver, text = res
                 if not messagebox.askyesno(
                         "检查更新",
                         f"发现新版本 v{ver}（当前 v{VERSION}）。\n"
-                        "更新后程序将自动重启，是否继续？"):
+                        "更新后程序将自动重启，是否继续？", parent=self.dlg):
                     return
                 if apply_update(text):
                     self.toast("检查更新",
@@ -1396,7 +1405,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 else:
                     messagebox.showerror("检查更新",
                                          "更新失败：文件写入被占用，"
-                                         "请手动重启后重试。")
+                                         "请手动重启后重试。", parent=self.dlg)
         self._update_worker(done)
 
     def _update_worker(self, on_done):
@@ -1512,7 +1521,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         menu.tk_popup(event.x_root, event.y_root)
 
     def add_todo_item(self):
-        text = simpledialog.askstring("添加待办", "待办内容：", parent=self)
+        text = simpledialog.askstring("添加待办", "待办内容：", parent=self.dlg)
         if text and text.strip():
             self.today_todos().append({"text": text.strip(), "done": False})
             self._todo_touch()
@@ -1522,7 +1531,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         if idx < len(items):
             text = simpledialog.askstring("编辑待办", "修改内容：",
                                           initialvalue=items[idx]["text"],
-                                          parent=self)
+                                          parent=self.dlg)
             if text and text.strip():
                 items[idx]["text"] = text.strip()
                 self._todo_touch()
