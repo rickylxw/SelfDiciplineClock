@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.1.3"
+VERSION = "1.1.4"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -181,37 +181,67 @@ def _latest_commit_sha(timeout=4):
         return json.loads(resp.read().decode("utf-8"))["sha"]
 
 
+def _fetch_codeload(timeout=10):
+    """GitHub codeload 整仓 zip：权威无缓存源，国内一般可达。"""
+    import io
+    import urllib.request
+    import zipfile
+    url = f"https://codeload.github.com/{_REPO}/zip/refs/heads/main"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        zf = zipfile.ZipFile(io.BytesIO(resp.read()))
+    for name in zf.namelist():
+        if name.endswith("/time_tracker.py"):
+            return zf.read(name).decode("utf-8")
+    raise ValueError("zip 中找不到 time_tracker.py")
+
+
 def fetch_latest(timeout=6):
     """查询所有可达更新源，取版本号最大的一份。
 
-    单个 CDN 缓存过期（jsDelivr @main 可缓存数小时）不会再让
-    客户端误判"已是最新"；拿到提交号时优先用 @SHA 地址，天然无缓存。
+    codeload/raw 为 GitHub 权威源（无缓存）；CDN 可能缓存过期
+    （jsDelivr @main 可缓存数小时），只作回退且不单独采信。
     """
     import urllib.request
+    candidates = []
+
+    def try_parse(text, source):
+        ver = parse_version(text)
+        if not ver:
+            raise ValueError(f"{source} 缺少版本号")
+        return ver
+
+    try:
+        text = _fetch_codeload()
+        candidates.append((try_parse(text, "codeload"), text))
+    except (OSError, ValueError):
+        pass
+
     urls = list(UPDATE_URLS)
     try:
         sha = _latest_commit_sha()
         if sha:
-            # 插到 raw 之后：官方源超时时立即走 SHA 精确地址
             urls[1:1] = [u.replace("@main", f"@{sha}") for u in UPDATE_URLS[1:]]
     except (OSError, KeyError, ValueError):
         pass
-    best = None
     last_err = OSError("无可用更新源")
     for url in urls:
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
                 text = resp.read().decode("utf-8")
-            ver = parse_version(text)
-            if not ver:
-                raise ValueError("远端文件缺少版本号")
-            if best is None or version_gt(ver, best[0]):
-                best = (ver, text)
+            candidates.append((try_parse(text, url), text))
         except (OSError, ValueError) as e:
             last_err = e
-    if best is None:
+
+    if not candidates:
         raise last_err
-    return best
+
+    def ver_key(v):
+        try:
+            return tuple(int(x) for x in v.split("."))
+        except ValueError:
+            return (0, 0, 0)
+
+    return max(candidates, key=lambda c: ver_key(c[0]))
 
 
 def apply_update(text):
