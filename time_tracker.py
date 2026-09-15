@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -114,13 +114,18 @@ def load_data():
     settings = data.get("settings", {})
     settings.setdefault("goals", {c: 0 for c in CATEGORIES})  # 秒，0 = 无目标
     settings.setdefault("goals_updated_ts", 0.0)  # 目标最后修改时间，同步用
+    settings.setdefault("todos_updated_ts", 0.0)  # 待办最后修改时间，同步用
+    settings.setdefault("todo_visible", True)     # 待办列表是否展开
     settings.setdefault("pomodoro", False)
     settings.setdefault("idle_pause", True)
     settings.setdefault("host_addr", "")      # 客户端模式连接的主机 IP
     settings.setdefault("sync_host", False)   # 是否作为主机共享
     settings.setdefault("font_size", 13)      # 悬浮条字号（Ctrl+滚轮调节）
+    # 每日待办：{日期: [{"text":..., "done": bool}, ...]}
+    todos = data.get("todos", {})
     data["daily"] = daily
     data["settings"] = settings
+    data["todos"] = todos
     return data
 
 
@@ -234,7 +239,9 @@ class SyncServer:
                                 "running_cat": a.running_cat,
                                 "elapsed": a.elapsed(),
                                 "goals": a.settings.get("goals", {}),
-                                "goals_ts": a.settings.get("goals_updated_ts", 0)})
+                                "goals_ts": a.settings.get("goals_updated_ts", 0),
+                                "todos": a.data.get("todos", {}),
+                                "todos_ts": a.settings.get("todos_updated_ts", 0)})
                 else:
                     self.send_error(404)
 
@@ -246,7 +253,7 @@ class SyncServer:
                     self.send_error(400)
                     return
                 if self.path == "/merge":
-                    outer.cmd_q.put(("merge", payload.get("daily", {})))
+                    outer.cmd_q.put(("merge", payload))
                     self._send({"ok": True})
                 elif self.path == "/control":
                     outer.cmd_q.put(("control", payload))
@@ -456,6 +463,17 @@ class TimeTracker(tk.Tk):
                                bg=BG, fg="#888888")
         self.status.pack(fill="x", pady=(1, 4))
 
+        # 待办清单（可折叠）：标题行 + 条目区
+        self.todo_header = tk.Label(bar, text="▸ 待办", font=("微软雅黑", 9),
+                                    bg=BG, fg="#9E9E9E", cursor="hand2",
+                                    anchor="w")
+        self.todo_header.pack(fill="x", padx=8)
+        self.todo_header.bind("<Button-1>",
+                              lambda e: self.toggle_todo_visible())
+        self.todo_body = tk.Frame(bar, bg=BG)
+        # 是否显示由 refresh_todos() 按 todo_visible 决定
+        self.todo_items = []          # [(var, label)] 保持引用防 GC
+
         # 右键菜单
         self.menu = tk.Menu(self, tearoff=0)
         self.menu.add_command(label="历史统计", command=self.show_history)
@@ -513,6 +531,11 @@ class TimeTracker(tk.Tk):
             canvas.config(height=bar_h)
         w = max(360, size * 36)
         h = size * 3 + bar_h + 18
+        if self.settings.get("todo_visible"):
+            rows = min(5, len(self.today_todos()))
+            if len(self.today_todos()) > 5:
+                rows = 6  # 还有「更多」提示行
+            h += 18 + 18 * max(rows, 1)
         x, y = self.winfo_x(), self.winfo_y()
         self.geometry(f"{w}x{h}+{x}+{y}")
         self.update_idletasks()
@@ -720,6 +743,7 @@ class TimeTracker(tk.Tk):
             self.draw_progress(cat)
         self.mode_btn.config(text="今日" if self.show_mode == "today" else "累计")
         self.refresh_status()
+        self.refresh_todos()
 
     def redraw_bar(self, canvas):
         """窗口/列宽变化时立即重绘对应进度条。"""
@@ -1163,12 +1187,16 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 st = self.fetch_state()
                 self.sync_warned = False
                 changed = merge_daily(self.data["daily"], st.get("daily", {}))
-                # 本地数据推回主机，形成双向合并（含每日目标与本机活跃度）
+                # 本地数据推回主机，形成双向合并（含每日目标、待办与本机活跃度）
                 self.post("/merge", {"daily": self.data["daily"],
                                      "goals": self.settings.get("goals", {}),
                                      "goals_ts": self.settings.get("goals_updated_ts", 0),
+                                     "todos": self.data.get("todos", {}),
+                                     "todos_ts": self.settings.get("todos_updated_ts", 0),
                                      "user_idle": idle_seconds()})
                 if self.apply_remote_goals(st.get("goals"), st.get("goals_ts")):
+                    changed += 1
+                if self.apply_remote_todos(st.get("todos"), st.get("todos_ts")):
                     changed += 1
                 if st.get("running_cat"):
                     self.mirror = {"cat": st["running_cat"],
@@ -1216,6 +1244,9 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 if self.apply_remote_goals(payload.get("goals"),
                                            payload.get("goals_ts")):
                     changed += 1
+                if self.apply_remote_todos(payload.get("todos"),
+                                           payload.get("todos_ts")):
+                    changed += 1
                 self.note_client_activity(payload.get("user_idle"))
                 if changed:
                     self.save()
@@ -1244,6 +1275,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                                      "goals": self.settings.get("goals", {}),
                                      "goals_ts": self.settings.get("goals_updated_ts", 0)})
                 self.apply_remote_goals(st.get("goals"), st.get("goals_ts"))
+                self.apply_remote_todos(st.get("todos"), st.get("todos_ts"))
                 self.save()
                 self.refresh()
                 messagebox.showinfo("立即同步", f"已与 {addr} 完成双向同步。")
@@ -1311,6 +1343,135 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 res = None
             self.after(0, lambda: on_done(res))
         threading.Thread(target=run, daemon=True).start()
+
+    # ---------------- 每日待办 ----------------
+
+    def today_todos(self):
+        """今天的待办列表；新一天自动把昨天未完成项携入今天。"""
+        todos = self.data["todos"]
+        today = today_str()
+        if today not in todos:
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            pending = [dict(item) for item in todos.get(yesterday, [])
+                       if not item.get("done")]
+            todos[today] = pending
+            self.save()
+        return todos[today]
+
+    def toggle_todo_visible(self):
+        self.settings["todo_visible"] = not self.settings.get("todo_visible", True)
+        self.save()
+        self.refresh_todos()
+        self.apply_ui_size()
+
+    def refresh_todos(self):
+        """重建待办条目控件（每秒 refresh 都会调用，控件廉价重建）。"""
+        items_all = self.today_todos()
+        visible = self.settings.get("todo_visible", True)
+        arrow = "▾" if visible else "▸"
+        if items_all:
+            undone = sum(1 for i in items_all if not i.get("done"))
+            self.todo_header.config(text=f"{arrow} 待办 {undone}/{len(items_all)}")
+        else:
+            self.todo_header.config(text=f"{arrow} 待办（右键添加）")
+
+        for w in self.todo_body.winfo_children():
+            w.destroy()
+        self.todo_items = []
+        if not visible:
+            self.todo_body.pack_forget()
+            return
+        self.todo_body.pack(fill="x", padx=10, pady=(0, 4))
+
+        for idx, item in enumerate(items_all[:5]):
+            row = tk.Frame(self.todo_body, bg=BG)
+            row.pack(fill="x")
+            var = tk.BooleanVar(value=item.get("done", False))
+            cb = tk.Checkbutton(row, variable=var, bg=BG, activebackground=BG,
+                                command=lambda i=idx: self.toggle_todo_done(i))
+            cb.pack(side="left")
+            txt = tk.Label(row, text=item["text"], font=("微软雅黑", 9),
+                           bg=BG, anchor="w", cursor="hand2")
+            txt.pack(side="left", fill="x")
+            self._style_todo_label(txt, var.get())
+            for w in (row, cb, txt):
+                w.bind("<Button-3>", lambda e, i=idx: self.todo_menu_popup(e, i))
+            txt.bind("<Double-Button-1>",
+                     lambda e, i=idx: self.edit_todo_item(i))
+            self.todo_items.append((var, txt))
+
+        if len(items_all) > 5:
+            tk.Label(self.todo_body,
+                     text=f"…还有 {len(items_all) - 5} 条（右键管理）",
+                     font=("微软雅黑", 8), bg=BG, fg="#777777",
+                     anchor="w").pack(fill="x")
+
+    def _style_todo_label(self, label, done):
+        label.config(fg="#5A5A5A" if done else "#CCCCCC",
+                     font=("微软雅黑", 9, "overstrike" if done else "normal"))
+
+    def _todo_touch(self):
+        self.settings["todos_updated_ts"] = datetime.now().timestamp()
+        self.save()
+        self.refresh_todos()
+        self.apply_ui_size()
+
+    def toggle_todo_done(self, idx):
+        items = self.today_todos()
+        if idx < len(items):
+            items[idx]["done"] = not items[idx]["done"]
+            self._todo_touch()
+
+    def todo_menu_popup(self, event, idx):
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="添加待办…", command=self.add_todo_item)
+        menu.add_command(label="编辑…", command=lambda: self.edit_todo_item(idx))
+        menu.add_command(label="删除", command=lambda: self.delete_todo_item(idx))
+        menu.add_command(label="清除已完成", command=self.clear_done_todos)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def add_todo_item(self):
+        text = simpledialog.askstring("添加待办", "待办内容：", parent=self)
+        if text and text.strip():
+            self.today_todos().append({"text": text.strip(), "done": False})
+            self._todo_touch()
+
+    def edit_todo_item(self, idx):
+        items = self.today_todos()
+        if idx < len(items):
+            text = simpledialog.askstring("编辑待办", "修改内容：",
+                                          initialvalue=items[idx]["text"],
+                                          parent=self)
+            if text and text.strip():
+                items[idx]["text"] = text.strip()
+                self._todo_touch()
+
+    def delete_todo_item(self, idx):
+        items = self.today_todos()
+        if idx < len(items):
+            items.pop(idx)
+            self._todo_touch()
+
+    def clear_done_todos(self):
+        items = self.today_todos()
+        self.data["todos"][today_str()] = [i for i in items if not i.get("done")]
+        self._todo_touch()
+
+    def apply_remote_todos(self, remote, ts):
+        """待办同步：时间戳新者胜，整表替换。"""
+        if not isinstance(remote, dict) or not isinstance(ts, (int, float)):
+            return False
+        if ts <= self.settings.get("todos_updated_ts", 0):
+            return False
+        clean = {}
+        for d, items in remote.items():
+            if isinstance(items, list):
+                clean[d] = [{"text": str(i.get("text", ""))[:80],
+                             "done": bool(i.get("done", False))}
+                            for i in items if isinstance(i, dict)]
+        self.data["todos"] = clean
+        self.settings["todos_updated_ts"] = ts
+        return True
 
     # ---------------- 通用 ----------------
 
