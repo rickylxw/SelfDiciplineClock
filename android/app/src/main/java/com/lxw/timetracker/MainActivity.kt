@@ -261,7 +261,7 @@ class MainActivity : Activity() {
                             .setMessage("新版本 v$newName 可用（当前 v$curName）。\n"
                                 + "下载并安装？")
                             .setPositiveButton("更新") { _, _ ->
-                                downloadApk(base + apk, newName)
+                                downloadApk(base, apk, newName)
                             }
                             .setNegativeButton("稍后", null)
                             .show()
@@ -273,27 +273,61 @@ class MainActivity : Activity() {
 
     /**
      * 应用内直接下载 APK 到「下载」目录（MediaStore，免存储权限）。
-     * DownloadManager 在部分模拟器上不发起请求，且自下载便于控制进度展示。
+     * version.json 很小哪个源都通，APK 大得多——劣源会中途卡死，
+     * 所以优先用检查更新时成功的源，失败再逐个换源重试。
      */
-    private fun downloadApk(url: String, verName: String) {
+    private fun downloadApk(preferred: String, apkPath: String, verName: String) {
         updateView.text = "正在下载 v$verName…"
         Thread {
+            val bases = if (preferred in UPDATE_BASES)
+            listOf(preferred) + UPDATE_BASES.filter { it != preferred } else UPDATE_BASES
             var uri: Uri? = null
-            try {
-                val conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.readTimeout = 15000
-                val total = conn.contentLengthLong
-                val resolver = contentResolver
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, "timetracker_$verName.apk")
-                    put(MediaStore.Downloads.MIME_TYPE,
-                        "application/vnd.android.package-archive")
+            var lastErr: Exception? = null
+            for ((idx, b) in bases.withIndex()) {
+                if (idx > 0) runOnUiThread {
+                    updateView.text = "下载源超时，切换源重试 ${idx + 1}/${bases.size}…"
                 }
-                if (Build.VERSION.SDK_INT < 29)
-                    throw IOException("需要 Android 10 及以上")
-                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: throw IOException("无法创建下载文件")
+                try {
+                    uri = downloadOnce(b + apkPath, verName)
+                    break
+                } catch (e: Exception) {
+                    lastErr = e
+                    uri = null
+                }
+            }
+            val done = uri
+            runOnUiThread {
+                if (done != null) {
+                    updateView.text = "下载完成 v$verName"
+                    installApk(done, verName)
+                } else {
+                    val msg = when (lastErr) {
+                        is java.net.SocketTimeoutException -> "网络超时，请稍后重试或换网络"
+                        else -> lastErr?.message ?: "网络错误"
+                    }
+                    updateView.text = "下载失败：$msg"
+                }
+            }
+        }.start()
+    }
+
+    /** 单个源的一次完整下载；失败时清理残留的 MediaStore 记录后向上抛。 */
+    private fun downloadOnce(url: String, verName: String): Uri {
+        if (Build.VERSION.SDK_INT < 29) throw IOException("需要 Android 10 及以上")
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 8000
+        conn.readTimeout = 20000
+        try {
+            val total = conn.contentLengthLong
+            val resolver = contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, "timetracker_$verName.apk")
+                put(MediaStore.Downloads.MIME_TYPE,
+                    "application/vnd.android.package-archive")
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IOException("无法创建下载文件")
+            try {
                 resolver.openOutputStream(uri)?.use { out ->
                     conn.inputStream.use { input ->
                         val buf = ByteArray(64 * 1024)
@@ -318,17 +352,14 @@ class MainActivity : Activity() {
                         }
                     }
                 } ?: throw IOException("下载流打开失败")
-                runOnUiThread {
-                    updateView.text = "下载完成 v$verName"
-                    installApk(uri!!, verName)
-                }
+                return uri
             } catch (e: Exception) {
-                uri?.let { contentResolver.delete(it, null, null) }
-                runOnUiThread {
-                    updateView.text = "下载失败：${e.message ?: "网络错误"}"
-                }
+                contentResolver.delete(uri, null, null)
+                throw e
             }
-        }.start()
+        } finally {
+            conn.disconnect()
+        }
     }
 
     /** 唤起系统安装器；无「安装未知应用」权限时先带用户去授权。 */
