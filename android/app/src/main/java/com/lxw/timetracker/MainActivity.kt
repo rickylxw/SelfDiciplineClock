@@ -59,13 +59,7 @@ class MainActivity : Activity() {
     private val timeViews = mutableMapOf<String, TextView>()
     private val cardViews = mutableMapOf<String, LinearLayout>()
 
-    private var host = ""
-    private var totals = mutableMapOf("工作" to 0L, "游戏" to 0L, "学习" to 0L)
-    private var runningCat: String? = null
-    private var liveStartElapsed = 0.0   // 收到 state 时主机已计的秒数
-    private var liveStartTs = 0.0        // 收到 state 时本机时钟（秒）
-    private var lastTouchTs = 0.0        // 最近一次触屏（秒），上报主机防误判离开
-    private var connected = false
+    // 主机地址/连接状态等在 SyncState（与后台服务共享）
 
     // 自动更新：下载完成但缺「安装未知应用」权限时暂存的安装包
     private var pendingInstallUri: Uri? = null
@@ -83,16 +77,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private val poll = object : Runnable {
-        override fun run() {
-            if (host.isNotEmpty()) {
-                fetchState()
-                reportActivity()
-            }
-            ui.postDelayed(this, POLL_MS)
-        }
-    }
-
     // 启动 2 秒后静默检查更新（有新版才弹窗，失败不打扰）
     private val startupUpdateCheck = Runnable { checkUpdate(manual = false) }
 
@@ -100,21 +84,31 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         prefs = getSharedPreferences("timetracker", MODE_PRIVATE)
+        SyncState.host = prefs.getString("host", "") ?: ""
+        SyncState.lastTouchTs = System.nanoTime() / 1_000_000_000.0
         hostEdit = findViewById(R.id.host_edit)
         statusView = findViewById(R.id.status_view)
         updateView = findViewById(R.id.update_view)
         updateView.text = "当前版本 v${versionInfo().second}"
-        hostEdit.setText(prefs.getString("host", ""))
+        hostEdit.setText(SyncState.host)
         findViewById<Button>(R.id.connect_btn).setOnClickListener { connect() }
         findViewById<Button>(R.id.update_btn).setOnClickListener { checkUpdate(manual = true) }
         buildCards()
+        // 常驻通知需要通知权限（Android 13+），拒绝不影响同步，只是通知不可见
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
     override fun onResume() {
         super.onResume()
-        if (!connected && host.isNotEmpty()) flashStatus("正在连接 $host…", 4.0)
+        if (!SyncState.connected && SyncState.host.isNotEmpty())
+            flashStatus("正在连接 ${SyncState.host}…", 4.0)
         ui.post(tick)
-        ui.post(poll)
+        // 后台同步交给前台服务：退到 App 外也持续轮询并上报在线，防止主机误暂停
+        if (SyncState.host.isNotEmpty())
+            startForegroundService(Intent(this, SyncService::class.java))
         ui.postDelayed(startupUpdateCheck, 2000)
         // 用户从设置里授予安装权限返回后，继续刚才中断的安装
         pendingInstallUri?.let { uri ->
@@ -128,7 +122,6 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         ui.removeCallbacks(tick)
-        ui.removeCallbacks(poll)
         ui.removeCallbacks(startupUpdateCheck)
     }
 
@@ -184,9 +177,10 @@ class MainActivity : Activity() {
     private fun render() {
         val liveTs = System.nanoTime() / 1_000_000_000.0
         for (cat in CATS) {
-            var seconds = totals[cat] ?: 0L
-            val live = if (runningCat == cat)
-                (liveStartElapsed + (liveTs - liveStartTs)).toLong() else 0L
+            var seconds = SyncState.totals[cat] ?: 0L
+            val live = if (SyncState.runningCat == cat)
+                (SyncState.liveStartElapsed + (liveTs - SyncState.liveStartTs)).toLong()
+            else 0L
             seconds += live
             timeViews[cat]?.text = fmt(seconds)
             if (live > 0L) {
@@ -203,13 +197,14 @@ class MainActivity : Activity() {
             statusView.setTextColor(Color.parseColor("#FFC107"))
         } else {
             statusView.text = when {
-                !connected -> if (host.isEmpty()) "未连接，请填写主机 IP"
-                              else "连接 $host 失败，点「连接」重试"
-                runningCat != null -> "● 主机正在计时：$runningCat"
-                else -> "已连接 $host · 空闲"
+                !SyncState.connected -> if (SyncState.host.isEmpty())
+                    "未连接，请填写主机 IP"
+                    else "连接 ${SyncState.host} 失败，点「连接」重试"
+                SyncState.runningCat != null -> "● 主机正在计时：${SyncState.runningCat}"
+                else -> "已连接 ${SyncState.host} · 空闲"
             }
-            statusView.setTextColor(
-                if (connected) Color.parseColor("#4CAF50") else Color.parseColor("#888888"))
+            statusView.setTextColor(if (SyncState.connected)
+                Color.parseColor("#4CAF50") else Color.parseColor("#888888"))
         }
     }
 
@@ -388,59 +383,29 @@ class MainActivity : Activity() {
             Toast.makeText(this, "请输入主机 IP", Toast.LENGTH_SHORT).show()
             return
         }
-        host = addr
-        lastTouchTs = System.nanoTime() / 1_000_000_000.0
-        flashStatus("正在连接 $host…", 5.0)
-        fetchState()
-    }
-
-    private fun fetchState() {
-        Thread {
-            try {
-                val body = httpGet("http://$host:$PORT/state")
-                val st = JSONObject(body)
-                val daily = st.optJSONObject("daily") ?: JSONObject()
-                val sum = mutableMapOf("工作" to 0L, "游戏" to 0L, "学习" to 0L)
-                for (key in daily.keys()) {
-                    val day = daily.getJSONObject(key)
-                    for (cat in CATS) sum[cat] = sum[cat]!! + day.optLong(cat, 0)
-                }
-                val rc = if (st.isNull("running_cat")) null else st.getString("running_cat")
-                runOnUiThread {
-                    connected = true
-                    totals = sum
-                    runningCat = rc
-                    if (rc != null) {
-                        liveStartElapsed = st.optDouble("elapsed", 0.0)
-                        liveStartTs = System.nanoTime() / 1_000_000_000.0
-                    }
-                    prefs.edit().putString("host", host).apply()
-                    render()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    connected = false
-                    runningCat = null
-                    render()
-                    if (host.isNotEmpty())
-                        flashStatus("连接 $host 失败，请检查主机与网络", 3.0)
-                }
-            }
-        }.start()
+        SyncState.host = addr
+        SyncState.lastTouchTs = System.nanoTime() / 1_000_000_000.0
+        flashStatus("正在连接 $addr…", 5.0)
+        prefs.edit().putString("host", addr).apply()
+        // 轮询与上报都在前台服务里，连接后立即开始
+        startForegroundService(Intent(this, SyncService::class.java))
     }
 
     private fun toggle(cat: String) {
-        if (!connected) {
+        if (!SyncState.connected) {
             Toast.makeText(this, "请先连接主机", Toast.LENGTH_SHORT).show()
             return
         }
-        lastTouchTs = System.nanoTime() / 1_000_000_000.0
+        SyncState.lastTouchTs = System.nanoTime() / 1_000_000_000.0
         flashStatus("⏳ 正在切换「$cat」…")
         Thread {
             try {
-                httpPost("http://$host:$PORT/control",
+                httpPost("http://${SyncState.host}:$PORT/control",
                     """{"action":"toggle","cat":"$cat"}""")
-                runOnUiThread { fetchState() }
+                runOnUiThread {
+                    // 触发服务立即轮询一次，尽快刷新卡片状态
+                    startForegroundService(Intent(this, SyncService::class.java))
+                }
             } catch (e: Exception) {
                 runOnUiThread {
                     flashStatus("❌ 主机不可达，未切换「$cat」", 4.0)
@@ -448,44 +413,6 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
-    }
-
-    private fun reportActivity() {
-        val idle = System.nanoTime() / 1_000_000_000.0 - lastTouchTs
-        Thread {
-            try {
-                httpPost("http://$host:$PORT/activity",
-                         """{"idle":$idle}""")
-            } catch (e: Exception) {
-                // 上报失败不影响主流程
-            }
-        }.start()
-    }
-
-    private fun httpGet(url: String, timeout: Int = 4000): String {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = timeout
-        conn.readTimeout = timeout
-        try {
-            return conn.inputStream.bufferedReader().readText()
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun httpPost(url: String, body: String): String {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 4000
-        conn.readTimeout = 4000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        try {
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            return conn.inputStream.bufferedReader().readText()
-        } finally {
-            conn.disconnect()
-        }
     }
 
     private fun fmt(seconds: Long): String {
