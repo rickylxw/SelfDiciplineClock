@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.2.7"
+VERSION = "1.3.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -54,8 +54,12 @@ COLORS = {
     "游戏": "#F44336",
     "学习": "#2196F3",
 }
-BG = "#1B1B1F"
-FG_DIM = "#BBBBBB"
+BG = "#17171C"        # 悬浮条底色
+PANEL = "#1E1E25"     # 待办区面板底色
+TRACK = "#2A2A33"     # 进度条轨道
+HOVER = "#22222B"     # 悬停高亮
+FG_DIM = "#A9A9B2"    # 次级文字
+TXT = "#EAEAEE"       # 主文字
 
 TICK_MS = 1000
 
@@ -436,6 +440,7 @@ class TimeTracker(tk.Tk):
         self.attributes("-alpha", 0.82)  # 半透明
         self.configure(bg=BG)
         self.position_window()
+        self.after(200, self.apply_rounded_corners)
 
         # 运行状态
         self.running_cat = None
@@ -471,6 +476,17 @@ class TimeTracker(tk.Tk):
         self.sync_loop()
         self.after(15000, self.silent_update_check)
 
+    def apply_rounded_corners(self):
+        """Win11 DWM 圆角（DWMWA_WINDOW_CORNER_PREFERENCE=33, ROUND=2）。
+        Win10 及以下没有该属性，静默跳过。"""
+        try:
+            hwnd = user32.GetAncestor(self.winfo_id(), 2)  # GA_ROOT
+            pref = ctypes.c_int(2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(pref), 4)
+        except (OSError, AttributeError):
+            pass
+
     def position_window(self):
         w, h = 480, 62
         geo = self.data.get("geometry")
@@ -501,7 +517,11 @@ class TimeTracker(tk.Tk):
 
         self.labels = {}
         for col, cat in enumerate(CATEGORIES, start=1):
-            lbl = tk.Label(grid, font=("微软雅黑", 13), bg=BG, fg=FG_DIM)
+            lbl = tk.Label(grid, font=("微软雅黑", 13), bg=BG, fg=FG_DIM,
+                           cursor="hand2")
+            lbl.bind("<Enter>", lambda e, l=lbl: l.config(fg=TXT)
+                     if self.running_cat is None else None)
+            lbl.bind("<Leave>", lambda e: self.refresh())
             lbl.grid(row=0, column=col, sticky="ew")
             # 松开时若未拖动则视为点击切换该分类
             lbl.bind("<ButtonRelease-1>",
@@ -517,7 +537,7 @@ class TimeTracker(tk.Tk):
         # 进度条行：与分类文字同一 grid 同一列
         self.bars = {}
         for col, cat in enumerate(CATEGORIES, start=1):
-            canvas = tk.Canvas(grid, height=4, bg="#333338",
+            canvas = tk.Canvas(grid, height=4, bg=BG,
                                highlightthickness=0)
             canvas.grid(row=1, column=col, sticky="ew", pady=(2, 0))
             canvas.bind("<Configure>",
@@ -536,7 +556,7 @@ class TimeTracker(tk.Tk):
         self.todo_header.pack(fill="x", padx=8)
         self.todo_header.bind("<Button-1>",
                               lambda e: self.toggle_todo_visible())
-        self.todo_body = tk.Frame(bar, bg=BG)
+        self.todo_body = tk.Frame(bar, bg=PANEL)
         # 空列表/折叠时没有条目可右键，标题行/待办区兜底提供添加入口
         self.todo_header.bind("<Button-3>", self.todo_area_menu)
         self.todo_body.bind("<Button-3>", self.todo_area_menu)
@@ -833,7 +853,7 @@ class TimeTracker(tk.Tk):
                 text = f"◐ {cat} {self.fmt(total)}"
             else:
                 fg = FG_DIM
-                text = f"{cat} {self.fmt(total)}"
+                text = f"○ {cat} {self.fmt(total)}"
             self.labels[cat].config(text=text, fg=fg)
             self.draw_progress(cat)
         self.mode_btn.config(text="今日" if self.show_mode == "today" else "累计")
@@ -847,22 +867,33 @@ class TimeTracker(tk.Tk):
                 self.draw_progress(cat)
                 return
 
+    def _round_rect(self, canvas, x1, y1, x2, y2, r, **kw):
+        """平滑圆角矩形（canvas polygon + smooth）。"""
+        r = min(r, (x2 - x1) / 2, (y2 - y1) / 2)
+        pts = [x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2,
+               x2-r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1]
+        return canvas.create_polygon(pts, smooth=True, **kw)
+
     def draw_progress(self, cat):
         canvas = self.bars[cat]
         width = canvas.winfo_width()
         height = canvas.winfo_height()
         if width <= 1:
             return
-        goal = self.settings["goals"].get(cat, 0)
         canvas.delete("all")
+        goal = self.settings["goals"].get(cat, 0)
+        # 轨道（圆角）
+        self._round_rect(canvas, 0, 0, width, height,
+                         r=height / 2, fill=TRACK, outline="")
         if not goal:
             return
         done = self.data["daily"].get(today_str(), {}).get(cat, 0)
         if cat == self.running_cat:
             done += self.elapsed()
         pct = max(0.0, min(1.0, done / goal))
-        canvas.create_rectangle(0, 0, max(2, int(width * pct)), height,
-                                fill=COLORS[cat], width=0)
+        fill_w = max(height, width * pct)  # 至少画出一个圆头
+        self._round_rect(canvas, 0, 0, fill_w, height,
+                         r=height / 2, fill=COLORS[cat], outline="")
 
     def refresh_status(self):
         now = datetime.now().timestamp()
@@ -997,6 +1028,8 @@ class TimeTracker(tk.Tk):
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.92)
         win.configure(bg="#2A2A30")
+        accent = tk.Frame(win, bg="#FFC107", width=3)
+        accent.pack(side="left", fill="y")
         pad = tk.Frame(win, bg="#2A2A30", padx=14, pady=10)
         pad.pack(fill="both", expand=True)
         tk.Label(pad, text=title, font=("微软雅黑", 10, "bold"),
@@ -1476,15 +1509,34 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         item_font = max(9, size - 4)
         self._todo_rows = []
         for idx in range(5):
-            row = tk.Frame(self.todo_body, bg=BG)
+            row = tk.Frame(self.todo_body, bg=PANEL)
             var = tk.BooleanVar(value=False)
-            cb = tk.Checkbutton(row, variable=var, bg=BG, activebackground=BG,
+            cb = tk.Checkbutton(row, variable=var, bg=PANEL, activebackground=PANEL,
+                                selectcolor=TRACK, relief="flat",
+                                highlightthickness=0,
                                 font=("微软雅黑", item_font),
                                 command=lambda i=idx: self.toggle_todo_done(i))
             cb.pack(side="left")
             txt = tk.Label(row, text="", font=("微软雅黑", item_font),
-                           bg=BG, anchor="w", cursor="hand2")
+                           bg=PANEL, anchor="w", cursor="hand2")
             txt.pack(side="left", fill="x")
+            widgets = (row, cb, txt)
+
+            def on_hover(e, ws=widgets, c=HOVER):
+                for x in ws:
+                    x.config(bg=c)
+                    if isinstance(x, tk.Checkbutton):
+                        x.config(activebackground=c)
+
+            def on_leave(e, ws=widgets, c=PANEL):
+                for x in ws:
+                    x.config(bg=c)
+                    if isinstance(x, tk.Checkbutton):
+                        x.config(activebackground=c)
+
+            for w in widgets:
+                w.bind("<Enter>", on_hover)
+                w.bind("<Leave>", on_leave)
             for w in (row, cb, txt):
                 w.bind("<Button-3>", lambda e, i=idx: self.todo_menu_popup(e, i))
             txt.bind("<Double-Button-1>",
