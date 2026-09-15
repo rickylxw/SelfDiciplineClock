@@ -2,12 +2,14 @@
 time_data.json
 time_data.json.bak
 time_data.json.migrated.bak
+time_tracker.py.update.bak
 
 __pycache__/
 *.pyc
 
 # Android 构建产物
 android/.gradle/
+android/.kotlin/
 android/build/
 android/app/build/
 android/local.properties

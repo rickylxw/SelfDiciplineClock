@@ -68,12 +68,36 @@
             android:textColor="#888888"
             android:textSize="13sp" />
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/update_btn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="检查更新" />
+
+            <TextView
+                android:id="@+id/update_view"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:text="当前版本"
+                android:textColor="#888888"
+                android:textSize="13sp" />
+        </LinearLayout>
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
             android:lineSpacingExtra="4dp"
-            android:text="使用说明：\n1. 电脑端右键悬浮条 → 局域网同步 → 作为主机共享\n2. 手机与电脑连同一 Wi-Fi\n3. 填入电脑 IP 点连接\n4. 点击卡片远程开始/暂停对应分类"
+            android:text="使用说明：\n1. 电脑端右键悬浮条 → 局域网同步 → 作为主机共享\n2. 手机与电脑连同一 Wi-Fi\n3. 填入电脑 IP 点连接\n4. 点击卡片远程开始/暂停对应分类\n5. 新版本可点「检查更新」升级（启动时也会自动检查）"
             android:textColor="#666666"
             android:textSize="12sp" />
     </LinearLayout>

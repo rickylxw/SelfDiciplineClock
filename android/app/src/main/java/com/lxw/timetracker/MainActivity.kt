@@ -1,12 +1,20 @@
 package com.lxw.timetracker
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ContentValues
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.Typeface
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
+import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
 import android.widget.EditText
@@ -15,6 +23,7 @@ import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.io.IOException
 import java.net.URL
 import java.util.Locale
 
@@ -30,11 +39,20 @@ class MainActivity : Activity() {
         const val PORT = 8765
         const val POLL_MS = 3000L
         const val TICK_MS = 1000L
+
+        // 与桌面端相同的多源回退：raw.github 国内常超时，jsDelivr 一般可达
+        val UPDATE_BASES = listOf(
+            "https://raw.githubusercontent.com/rickylxw/SelfDiciplineClock/main/",
+            "https://cdn.jsdelivr.net/gh/rickylxw/SelfDiciplineClock@main/",
+            "https://fastly.jsdelivr.net/gh/rickylxw/SelfDiciplineClock@main/"
+        )
+        const val UPDATE_INFO_PATH = "android/version.json"
     }
 
     private lateinit var prefs: SharedPreferences
     private lateinit var hostEdit: EditText
     private lateinit var statusView: TextView
+    private lateinit var updateView: TextView
     private val timeViews = mutableMapOf<String, TextView>()
     private val cardViews = mutableMapOf<String, LinearLayout>()
 
@@ -42,9 +60,12 @@ class MainActivity : Activity() {
     private var totals = mutableMapOf("工作" to 0L, "游戏" to 0L, "学习" to 0L)
     private var runningCat: String? = null
     private var liveStartElapsed = 0.0   // 收到 state 时主机已计的秒数
-    private var liveStartTs = 0.0        // 收到 state 时的本机时钟（秒）
+    private var liveStartTs = 0.0        // 收到 state 时本机时钟（秒）
     private var lastTouchTs = 0.0        // 最近一次触屏（秒），上报主机防误判离开
     private var connected = false
+
+    // 自动更新：下载完成但缺「安装未知应用」权限时暂存的安装包
+    private var pendingInstallUri: Uri? = null
 
     private val ui = Handler(Looper.getMainLooper())
 
@@ -65,14 +86,20 @@ class MainActivity : Activity() {
         }
     }
 
+    // 启动 2 秒后静默检查更新（有新版才弹窗，失败不打扰）
+    private val startupUpdateCheck = Runnable { checkUpdate(manual = false) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         prefs = getSharedPreferences("timetracker", MODE_PRIVATE)
         hostEdit = findViewById(R.id.host_edit)
         statusView = findViewById(R.id.status_view)
+        updateView = findViewById(R.id.update_view)
+        updateView.text = "当前版本 v${versionInfo().second}"
         hostEdit.setText(prefs.getString("host", ""))
         findViewById<Button>(R.id.connect_btn).setOnClickListener { connect() }
+        findViewById<Button>(R.id.update_btn).setOnClickListener { checkUpdate(manual = true) }
         buildCards()
     }
 
@@ -80,12 +107,21 @@ class MainActivity : Activity() {
         super.onResume()
         ui.post(tick)
         ui.post(poll)
+        ui.postDelayed(startupUpdateCheck, 2000)
+        // 用户从设置里授予安装权限返回后，继续刚才中断的安装
+        pendingInstallUri?.let { uri ->
+            if (canInstallPackages()) {
+                pendingInstallUri = null
+                installApk(uri, versionInfo().second)
+            }
+        }
     }
 
     override fun onPause() {
         super.onPause()
         ui.removeCallbacks(tick)
         ui.removeCallbacks(poll)
+        ui.removeCallbacks(startupUpdateCheck)
     }
 
     // ---------------- 界面 ----------------
@@ -150,6 +186,138 @@ class MainActivity : Activity() {
         }
         statusView.setTextColor(
             if (connected) Color.parseColor("#4CAF50") else Color.parseColor("#888888"))
+    }
+
+    // ---------------- 自动更新 ----------------
+
+    private fun versionInfo(): Pair<Long, String> {
+        val pi = packageManager.getPackageInfo(packageName, 0)
+        val code = if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode
+                   else pi.versionCode.toLong()
+        return code to (pi.versionName ?: "?")
+    }
+
+    private fun canInstallPackages(): Boolean =
+        Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls()
+
+    /** 按源顺序拉取 version.json；manual=true 时把「失败/已最新」也提示出来。 */
+    private fun checkUpdate(manual: Boolean) {
+        Thread {
+            var info: JSONObject? = null
+            var base = ""
+            for (b in UPDATE_BASES) {
+                try {
+                    info = JSONObject(httpGet(b + UPDATE_INFO_PATH, timeout = 5000))
+                    base = b
+                    break
+                } catch (e: Exception) {
+                }
+            }
+            val newCode = info?.optInt("versionCode", 0)?.toLong() ?: -1L
+            runOnUiThread {
+                val (curCode, curName) = versionInfo()
+                when {
+                    newCode <= 0 -> {
+                        updateView.text = "当前版本 v$curName"
+                        if (manual) Toast.makeText(this,
+                            "检查失败：无法访问更新源", Toast.LENGTH_SHORT).show()
+                    }
+                    newCode <= curCode -> {
+                        updateView.text = "已是最新版本 v$curName"
+                        if (manual) Toast.makeText(this,
+                            "已是最新版本", Toast.LENGTH_SHORT).show()
+                    }
+                    else -> {
+                        val newName = info!!.optString("versionName", newCode.toString())
+                        val apk = info.optString("apk", "android/apk/timetracker.apk")
+                        AlertDialog.Builder(this)
+                            .setTitle("发现新版本")
+                            .setMessage("新版本 v$newName 可用（当前 v$curName）。\n"
+                                + "下载并安装？")
+                            .setPositiveButton("更新") { _, _ ->
+                                downloadApk(base + apk, newName)
+                            }
+                            .setNegativeButton("稍后", null)
+                            .show()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * 应用内直接下载 APK 到「下载」目录（MediaStore，免存储权限）。
+     * DownloadManager 在部分模拟器上不发起请求，且自下载便于控制进度展示。
+     */
+    private fun downloadApk(url: String, verName: String) {
+        updateView.text = "正在下载 v$verName…"
+        Thread {
+            var uri: Uri? = null
+            try {
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.readTimeout = 15000
+                val total = conn.contentLengthLong
+                val resolver = contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, "timetracker_$verName.apk")
+                    put(MediaStore.Downloads.MIME_TYPE,
+                        "application/vnd.android.package-archive")
+                }
+                if (Build.VERSION.SDK_INT < 29)
+                    throw IOException("需要 Android 10 及以上")
+                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IOException("无法创建下载文件")
+                resolver.openOutputStream(uri)?.use { out ->
+                    conn.inputStream.use { input ->
+                        val buf = ByteArray(64 * 1024)
+                        var done = 0L
+                        var lastPct = -1
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            done += n
+                            if (total > 0) {
+                                val pct = (done * 100 / total).toInt()
+                                if (pct != lastPct) {
+                                    lastPct = pct
+                                    runOnUiThread {
+                                        if (!isFinishing && !isDestroyed)
+                                            updateView.text =
+                                                "正在下载 v$verName… $pct%"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } ?: throw IOException("下载流打开失败")
+                runOnUiThread {
+                    updateView.text = "下载完成 v$verName"
+                    installApk(uri!!, verName)
+                }
+            } catch (e: Exception) {
+                uri?.let { contentResolver.delete(it, null, null) }
+                runOnUiThread {
+                    updateView.text = "下载失败：${e.message ?: "网络错误"}"
+                }
+            }
+        }.start()
+    }
+
+    /** 唤起系统安装器；无「安装未知应用」权限时先带用户去授权。 */
+    private fun installApk(uri: Uri, verName: String) {
+        if (!canInstallPackages()) {
+            pendingInstallUri = uri
+            updateView.text = "需要「安装未知应用」权限，授权后返回即可继续"
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName")))
+            return
+        }
+        updateView.text = "正在唤起系统安装器…"
+        startActivity(Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
     }
 
     // ---------------- 网络 ----------------
@@ -229,10 +397,10 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun httpGet(url: String): String {
+    private fun httpGet(url: String, timeout: Int = 2500): String {
         val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 2500
-        conn.readTimeout = 2500
+        conn.connectTimeout = timeout
+        conn.readTimeout = timeout
         try {
             return conn.inputStream.bufferedReader().readText()
         } finally {

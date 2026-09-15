@@ -7,12 +7,17 @@ android {
     namespace "com.lxw.timetracker"
     compileSdk 34
 
+    // 离线构建：跳过需要联网解析依赖的 lintVital 检查
+    lint {
+        checkReleaseBuilds false
+    }
+
     defaultConfig {
         applicationId "com.lxw.timetracker"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
     }
 
     compileOptions {
@@ -27,6 +32,8 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            // 个人自用：release 也用 debug 签名，保证应用内更新时签名一致可覆盖安装
+            signingConfig signingConfigs.debug
         }
     }
 }
