@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private var runningCat: String? = null
     private var liveStartElapsed = 0.0   // 收到 state 时主机已计的秒数
     private var liveStartTs = 0.0        // 收到 state 时的本机时钟（秒）
+    private var lastTouchTs = 0.0        // 最近一次触屏（秒），上报主机防误判离开
     private var connected = false
 
     private val ui = Handler(Looper.getMainLooper())
@@ -56,7 +57,10 @@ class MainActivity : Activity() {
 
     private val poll = object : Runnable {
         override fun run() {
-            if (host.isNotEmpty()) fetchState()
+            if (host.isNotEmpty()) {
+                fetchState()
+                reportActivity()
+            }
             ui.postDelayed(this, POLL_MS)
         }
     }
@@ -157,6 +161,7 @@ class MainActivity : Activity() {
             return
         }
         host = addr
+        lastTouchTs = System.nanoTime() / 1_000_000_000.0
         fetchState()
     }
 
@@ -198,6 +203,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "请先连接主机", Toast.LENGTH_SHORT).show()
             return
         }
+        lastTouchTs = System.nanoTime() / 1_000_000_000.0
         Thread {
             try {
                 httpPost("http://$host:$PORT/control",
@@ -207,6 +213,18 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     Toast.makeText(this, "主机不可达", Toast.LENGTH_SHORT).show()
                 }
+            }
+        }.start()
+    }
+
+    private fun reportActivity() {
+        val idle = System.nanoTime() / 1_000_000_000.0 - lastTouchTs
+        Thread {
+            try {
+                httpPost("http://$host:$PORT/activity",
+                         """{"idle":$idle}""")
+            } catch (e: Exception) {
+                // 上报失败不影响主流程
             }
         }.start()
     }

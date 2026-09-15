@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -251,6 +251,9 @@ class SyncServer:
                 elif self.path == "/control":
                     outer.cmd_q.put(("control", payload))
                     self._send({"ok": True})
+                elif self.path == "/activity":
+                    outer.cmd_q.put(("activity", payload))
+                    self._send({"ok": True})
                 else:
                     self.send_error(404)
 
@@ -383,6 +386,7 @@ class TimeTracker(tk.Tk):
         self.mirror = None          # 客户端镜像：{"cat", "elapsed", "ts"}
         self.sync_warned = False
         self.pending_ver = None
+        self.last_client_active_ts = 0.0  # 最近一次客户端报告的用户活动
         if self.settings.get("sync_host"):
             self.start_host()
 
@@ -658,7 +662,12 @@ class TimeTracker(tk.Tk):
     def check_idle(self):
         if not self.idle_var.get():
             return
-        if self.running_cat and idle_seconds() > IDLE_PAUSE_SECONDS:
+        # 本机空闲且没有任何客户端报告过用户活动，才算真正离开
+        client_recently_active = (datetime.now().timestamp()
+                                  - self.last_client_active_ts
+                                  < IDLE_PAUSE_SECONDS)
+        if (self.running_cat and idle_seconds() > IDLE_PAUSE_SECONDS
+                and not client_recently_active):
             self.stop_and_save()
             self.idle_paused = True
             self.toast("离开检测", "检测到离开，计时已自动暂停。")
@@ -1154,10 +1163,11 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 st = self.fetch_state()
                 self.sync_warned = False
                 changed = merge_daily(self.data["daily"], st.get("daily", {}))
-                # 本地数据推回主机，形成双向合并（含每日目标）
+                # 本地数据推回主机，形成双向合并（含每日目标与本机活跃度）
                 self.post("/merge", {"daily": self.data["daily"],
                                      "goals": self.settings.get("goals", {}),
-                                     "goals_ts": self.settings.get("goals_updated_ts", 0)})
+                                     "goals_ts": self.settings.get("goals_updated_ts", 0),
+                                     "user_idle": idle_seconds()})
                 if self.apply_remote_goals(st.get("goals"), st.get("goals_ts")):
                     changed += 1
                 if st.get("running_cat"):
@@ -1206,13 +1216,22 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 if self.apply_remote_goals(payload.get("goals"),
                                            payload.get("goals_ts")):
                     changed += 1
+                self.note_client_activity(payload.get("user_idle"))
                 if changed:
                     self.save()
                     self.refresh()
+            elif kind == "activity":
+                self.note_client_activity(payload.get("idle"))
             elif kind == "control" and payload.get("action") == "toggle":
                 cat = payload.get("cat")
                 if cat in CATEGORIES:
                     self.toggle(cat)
+
+    def note_client_activity(self, idle_seconds_value):
+        """客户端报告了用户活跃：其空闲时长小于阈值即视为人在。"""
+        if isinstance(idle_seconds_value, (int, float)) \
+                and 0 <= idle_seconds_value < IDLE_PAUSE_SECONDS:
+            self.last_client_active_ts = datetime.now().timestamp()
 
     def sync_now(self):
         """手动双向同步一次。"""
