@@ -5,8 +5,11 @@ import android.app.AlertDialog
 import android.content.ContentValues
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -67,6 +70,10 @@ class MainActivity : Activity() {
     // 自动更新：下载完成但缺「安装未知应用」权限时暂存的安装包
     private var pendingInstallUri: Uri? = null
 
+    // 瞬时状态提示（连接中/切换中/失败），到期后恢复常规状态显示
+    private var transientMsg: String? = null
+    private var transientUntil = 0.0
+
     private val ui = Handler(Looper.getMainLooper())
 
     private val tick = object : Runnable {
@@ -105,6 +112,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (!connected && host.isNotEmpty()) flashStatus("正在连接 $host…", 4.0)
         ui.post(tick)
         ui.post(poll)
         ui.postDelayed(startupUpdateCheck, 2000)
@@ -134,6 +142,10 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(36, 32, 36, 32)
                 setBackgroundColor(Color.parseColor("#1F1F24"))
+                // 按压涟漪：让点击有立即可见的视觉响应
+                foreground = RippleDrawable(
+                    ColorStateList.valueOf(Color.parseColor("#40FFFFFF")),
+                    null, ColorDrawable(Color.WHITE))
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -163,6 +175,12 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 瞬时状态提示（连接中/切换中/失败），到期后恢复常规状态显示。 */
+    private fun flashStatus(msg: String, seconds: Double = 3.0) {
+        transientMsg = msg
+        transientUntil = System.nanoTime() / 1_000_000_000.0 + seconds
+    }
+
     private fun render() {
         val liveTs = System.nanoTime() / 1_000_000_000.0
         for (cat in CATS) {
@@ -179,13 +197,20 @@ class MainActivity : Activity() {
                 cardViews[cat]?.setBackgroundColor(Color.parseColor("#1F1F24"))
             }
         }
-        statusView.text = when {
-            !connected -> "未连接，请填写主机 IP"
-            runningCat != null -> "● 主机正在计时：$runningCat"
-            else -> "已连接 $host · 空闲"
+        val t = transientMsg
+        if (t != null && liveTs < transientUntil) {
+            statusView.text = t
+            statusView.setTextColor(Color.parseColor("#FFC107"))
+        } else {
+            statusView.text = when {
+                !connected -> if (host.isEmpty()) "未连接，请填写主机 IP"
+                              else "连接 $host 失败，点「连接」重试"
+                runningCat != null -> "● 主机正在计时：$runningCat"
+                else -> "已连接 $host · 空闲"
+            }
+            statusView.setTextColor(
+                if (connected) Color.parseColor("#4CAF50") else Color.parseColor("#888888"))
         }
-        statusView.setTextColor(
-            if (connected) Color.parseColor("#4CAF50") else Color.parseColor("#888888"))
     }
 
     // ---------------- 自动更新 ----------------
@@ -202,6 +227,7 @@ class MainActivity : Activity() {
 
     /** 按源顺序拉取 version.json；manual=true 时把「失败/已最新」也提示出来。 */
     private fun checkUpdate(manual: Boolean) {
+        updateView.text = "正在检查更新…"
         Thread {
             var info: JSONObject? = null
             var base = ""
@@ -330,6 +356,7 @@ class MainActivity : Activity() {
         }
         host = addr
         lastTouchTs = System.nanoTime() / 1_000_000_000.0
+        flashStatus("正在连接 $host…", 5.0)
         fetchState()
     }
 
@@ -361,6 +388,8 @@ class MainActivity : Activity() {
                     connected = false
                     runningCat = null
                     render()
+                    if (host.isNotEmpty())
+                        flashStatus("连接 $host 失败，请检查主机与网络", 3.0)
                 }
             }
         }.start()
@@ -372,6 +401,7 @@ class MainActivity : Activity() {
             return
         }
         lastTouchTs = System.nanoTime() / 1_000_000_000.0
+        flashStatus("⏳ 正在切换「$cat」…")
         Thread {
             try {
                 httpPost("http://$host:$PORT/control",
@@ -379,6 +409,7 @@ class MainActivity : Activity() {
                 runOnUiThread { fetchState() }
             } catch (e: Exception) {
                 runOnUiThread {
+                    flashStatus("❌ 主机不可达，未切换「$cat」", 4.0)
                     Toast.makeText(this, "主机不可达", Toast.LENGTH_SHORT).show()
                 }
             }
