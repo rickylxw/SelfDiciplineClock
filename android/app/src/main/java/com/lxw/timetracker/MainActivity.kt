@@ -117,6 +117,7 @@ class MainActivity : Activity() {
         todoList = findViewById(R.id.todo_list)
         todoEdit = findViewById(R.id.todo_edit)
         todoEdit.setTextColor(Color.parseColor("#EEEEEE"))
+        todoEdit.setOnEditorActionListener { _, _, _ -> addTodo(); true }
         findViewById<Button>(R.id.todo_add_btn).setOnClickListener { addTodo() }
         buildCards()
         // 常驻通知需要通知权限（Android 13+），拒绝不影响同步，只是通知不可见
@@ -342,12 +343,13 @@ class MainActivity : Activity() {
     /** 把修改写入待办表（今天不存在则按携入规则物化今天），乐观刷新并推送。 */
     private fun applyAndPushTodo(index: Int, newItem: JSONObject) {
         val todayKey = SyncState.todayStr()
-        // 基于最新展示列表生成新今日列表
+        // 基于最新展示列表生成新今日列表；index 等于长度时为追加（新增待办）
         val list = JSONArray()
         for (i in 0 until SyncState.todosToday.length()) {
             list.put(if (i == index) newItem
                      else JSONObject(SyncState.todosToday.optJSONObject(i)?.toString() ?: "{}"))
         }
+        if (index >= list.length()) list.put(newItem)
         // 整表替换语义：必须基于完整表修改，否则会丢掉其他日期的待办
         val all = JSONObject(SyncState.todosAll.toString())
         all.put(todayKey, list)
