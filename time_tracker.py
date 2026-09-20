@@ -264,12 +264,23 @@ def apply_update(text):
         return False
 
 
+def pythonw_executable():
+    """pythonw.exe：无控制台窗口运行 GUI。"""
+    exe = sys.executable
+    d, base = os.path.split(exe)
+    cand = os.path.join(d, base.replace("python", "pythonw"))
+    return cand if os.path.isfile(cand) else exe
+
+
 def restart_app():
-    """延迟启动新实例：旧进程退出并释放同步端口后，新进程再启动。"""
+    """延迟启动新实例：旧进程退出并释放同步端口后，新进程再启动。
+
+    用 pythonw 启动，更新重启后不再弹出黑色控制台窗口。
+    """
     path = os.path.abspath(__file__)
     no_window = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
-    starter = ("import time, subprocess, sys; time.sleep(1.2); "
-               f"subprocess.Popen([sys.executable, {path!r}], "
+    starter = ("import time, subprocess, os, sys; time.sleep(1.2); "
+               f"subprocess.Popen([r{pythonw_executable()!r}, {path!r}], "
                f"creationflags={no_window})")
     subprocess.Popen([sys.executable, "-c", starter],
                      creationflags=no_window)
@@ -407,7 +418,8 @@ def autostart_enabled():
 
 
 def autostart_command():
-    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+    # pythonw 无控制台窗口，开机自启不再弹黑框
+    return f'"{pythonw_executable()}" "{os.path.abspath(__file__)}"'
 
 
 def set_autostart(enable):
