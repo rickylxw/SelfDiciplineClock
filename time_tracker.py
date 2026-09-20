@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -503,13 +503,17 @@ class TimeTracker(tk.Tk):
             pass
 
     def position_window(self):
-        w, h = 480, 62
+        # 记忆位置可能因分辨率变化/多屏拔插落在屏幕外，钳制回可视区
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
         geo = self.data.get("geometry")
         if geo:
-            self.geometry(f"+{geo[0]}+{geo[1]}")
+            x = max(0, min(int(geo[0]), sw - 100))
+            y = max(0, min(int(geo[1]), sh - 40))
         else:
-            x = (self.winfo_screenwidth() - w) // 2
-            self.geometry(f"+{x}+60")
+            x = (sw - 480) // 2
+            y = 60
+        self.geometry(f"+{x}+{y}")
         self.update_idletasks()
 
     # ---------------- 悬浮条界面 ----------------
@@ -675,8 +679,11 @@ class TimeTracker(tk.Tk):
         if not hasattr(self, "drag_off"):
             return
         self.drag_moved = True
-        self.geometry(f"+{event.x_root - self.drag_off[0]}"
-                      f"+{event.y_root - self.drag_off[1]}")
+        # 钳制在屏幕内，至少留 60px 可见，避免拖丢找不回
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        nx = max(0, min(event.x_root - self.drag_off[0], sw - 60))
+        ny = max(0, min(event.y_root - self.drag_off[1], sh - 20))
+        self.geometry(f"+{nx}+{ny}")
 
     def drag_release(self, event):
         try:
