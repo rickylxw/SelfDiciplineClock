@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.3.2"
+VERSION = "1.4.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -120,6 +120,8 @@ def load_data():
     settings.setdefault("goals_updated_ts", 0.0)  # 目标最后修改时间，同步用
     settings.setdefault("todos_updated_ts", 0.0)  # 待办最后修改时间，同步用
     settings.setdefault("todo_visible", True)     # 待办列表是否展开
+    settings.setdefault("mini_edge", "right")     # 迷你图标停靠边
+    settings.setdefault("mini_pos", None)         # 迷你图标沿边位置
     settings.setdefault("pomodoro", False)
     settings.setdefault("idle_pause", True)
     settings.setdefault("host_addr", "")      # 客户端模式连接的主机 IP
@@ -485,6 +487,8 @@ class TimeTracker(tk.Tk):
         self.dlg.withdraw()
         self._topmost_done = set()  # 已打上置顶的弹窗，避免重复抢层级
         self.build_ui()
+        if self.settings.get("mini"):
+            self.minimize_to_mini()
         self.quote_loop()
         self.update_loop()
         self.hotkey_loop()
@@ -612,6 +616,8 @@ class TimeTracker(tk.Tk):
                                   variable=self.host_var, command=self.toggle_host)
         sync_menu.add_command(label="连接主机…", command=self.connect_host)
         sync_menu.add_command(label="立即同步", command=self.sync_now)
+        self.menu.add_command(label="缩小为贴边小图标",
+                              command=self.minimize_to_mini)
         self.menu.add_command(label="大小：按住 Ctrl 滚动滚轮调节",
                               state="disabled")
         self.menu.add_separator()
@@ -881,6 +887,8 @@ class TimeTracker(tk.Tk):
         self.mode_btn.config(text="今日" if self.show_mode == "today" else "累计")
         self.refresh_status()
         self.refresh_todos()
+        if self.settings.get("mini"):
+            self._draw_mini()
 
     def redraw_bar(self, canvas):
         """窗口/列宽变化时立即重绘对应进度条。"""
@@ -1040,6 +1048,139 @@ class TimeTracker(tk.Tk):
 
         tk.Button(win, text="保存", command=apply, width=10).grid(
             row=len(CATEGORIES), column=0, columnspan=2, pady=8)
+
+    # ---------------- 迷你贴边小图标 ----------------
+
+    MINI_SIZE = 26
+
+    def _mini_dock_pos(self):
+        """按停靠边计算小图标位置（沿边位置取自记忆，钳制在屏内）。"""
+        size = self.MINI_SIZE
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        edge = self.settings.get("mini_edge", "right")
+        along = self.settings.get("mini_pos") or [sh // 3]
+        along = max(size, min(int(along[0]), sh - size - 2))
+        if edge == "left":
+            return 2, along
+        if edge == "bottom":
+            x = max(size, min(int((self.settings.get("mini_pos") or [sw // 2])[0]),
+                              sw - size - 2))
+            return x, sh - size - 2
+        return sw - size - 2, along
+
+    def minimize_to_mini(self):
+        """把悬浮条缩成贴边小圆点。"""
+        self.settings["mini"] = True
+        if not getattr(self, "mini", None):
+            size = self.MINI_SIZE
+            self.mini = tk.Toplevel(self)
+            self.mini._is_toast = True  # 不参与弹窗检测
+            self.mini.overrideredirect(True)
+            self.mini.attributes("-topmost", True)
+            self.mini.configure(bg=BG)
+            self.mini.geometry(f"{size}x{size}")
+            self.mini_canvas = tk.Canvas(self.mini, width=size, height=size,
+                                         bg=BG, highlightthickness=0)
+            self.mini_canvas.pack(fill="both", expand=True)
+            self.mini.bind("<Button-1>", self.mini_drag_start, add="+")
+            self.mini.bind("<B1-Motion>", self.mini_drag_move, add="+")
+            self.mini.bind("<ButtonRelease-1>", self.mini_click, add="+")
+            self.mini.bind("<Button-3>", self.mini_menu)
+            self.mini_canvas.bind("<Button-1>", self.mini_drag_start, add="+")
+            self.mini_canvas.bind("<B1-Motion>", self.mini_drag_move, add="+")
+            self.mini_canvas.bind("<ButtonRelease-1>", self.mini_click, add="+")
+            self.mini_canvas.bind("<Button-3>", self.mini_menu)
+        x, y = self._mini_dock_pos()
+        self.mini.geometry(f"+{x}+{y}")
+        self.withdraw()
+        self.mini.deiconify()
+        self._draw_mini()
+        self.save()
+
+    def restore_from_mini(self):
+        """小图标恢复成完整悬浮条，位置出现在小图标附近。"""
+        self.settings["mini"] = False
+        if getattr(self, "mini", None):
+            x = min(self.mini.winfo_x(),
+                    self.winfo_screenwidth() - self.winfo_width() - 4)
+            y = min(self.mini.winfo_y(),
+                    self.winfo_screenheight() - self.winfo_height() - 4)
+            self.mini.withdraw()
+        else:
+            x, y = 460, 60
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.deiconify()
+        self.apply_rounded_corners()
+        self.save()
+
+    def _draw_mini(self):
+        """重画小圆点：外圈轨道色，内点为计时分类色。"""
+        if not getattr(self, "mini", None) or not self.mini.winfo_viewable():
+            return
+        cv = self.mini_canvas
+        size = self.MINI_SIZE
+        cv.delete("all")
+        r = size / 2 - 2
+        cx = cy = size / 2
+        cv.create_oval(cx - r, cy - r, cx + r, cy + r,
+                       fill=TRACK, outline="")
+        cat = self.running_cat or (self.mirror or {}).get("cat")
+        inner = COLORS.get(cat, FG_DIM)
+        ri = r * (0.75 if cat else 0.45)
+        cv.create_oval(cx - ri, cy - ri, cx + ri, cy + ri,
+                       fill=inner, outline="")
+
+    def mini_drag_start(self, event):
+        self.mini_moved = False
+        self.mini_off = (event.x_root - self.mini.winfo_x(),
+                         event.y_root - self.mini.winfo_y())
+
+    def mini_drag_move(self, event):
+        self.mini_moved = True
+        size = self.MINI_SIZE
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        edge = self.settings.get("mini_edge", "right")
+        # 停靠轴钉死在边缘，自由轴跟随鼠标并钳制
+        if edge == "left":
+            x, y = 2, event.y_root - self.mini_off[1]
+        elif edge == "bottom":
+            x, y = event.x_root - self.mini_off[0], sh - size - 2
+        else:
+            x, y = sw - size - 2, event.y_root - self.mini_off[1]
+        free_x = edge != "bottom"
+        if free_x:
+            x = max(2, min(x, sw - size - 2))
+        else:
+            x = max(2, min(x, sw - size - 2))
+        y = max(2, min(y, sh - size - 2))
+        self.mini.geometry(f"+{x}+{y}")
+        self.settings["mini_pos"] = [x if edge == "bottom" else y]
+
+    def mini_click(self, event):
+        if not getattr(self, "mini_moved", False):
+            self.restore_from_mini()
+
+    def mini_menu(self, event):
+        edge = self.settings.get("mini_edge", "right")
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="恢复悬浮条", command=self.restore_from_mini)
+        edge_menu = tk.Menu(menu, tearoff=0)
+        for name, key in (("停靠左侧", "left"), ("停靠右侧", "right"),
+                          ("停靠下边", "bottom")):
+            edge_menu.add_radiobutton(
+                label=name, value=key,
+                command=lambda k=key: self.set_mini_edge(k))
+        menu.add_cascade(label="停靠位置", menu=edge_menu)
+        menu.add_separator()
+        menu.add_command(label="退出", command=self.on_close)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def set_mini_edge(self, edge):
+        self.settings["mini_edge"] = edge
+        self.save()
+        if getattr(self, "mini", None) and self.mini.winfo_viewable():
+            x, y = self._mini_dock_pos()
+            self.mini.geometry(f"+{x}+{y}")
 
     # ---------------- 提醒气泡 ----------------
 
@@ -1772,9 +1913,12 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
     def on_close(self):
         self.stop_and_save()
         self.stop_host()
-        if not self.locked:
+        if not self.locked and not self.settings.get("mini"):
             self.data["geometry"] = [self.winfo_x(), self.winfo_y()]
-            self.save()
+        self.settings["mini"] = False  # 下次启动恢复完整悬浮条
+        if getattr(self, "mini", None):
+            self.mini.destroy()
+        self.save()
         self.destroy()
 
 
