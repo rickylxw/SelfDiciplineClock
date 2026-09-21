@@ -1115,7 +1115,7 @@ class TimeTracker(tk.Tk):
 
     def _draw_mini(self):
         """重画小圆点：外圈轨道色，内点为计时分类色。"""
-        if not getattr(self, "mini", None) or not self.mini.winfo_viewable():
+        if not getattr(self, "mini", None) or not self.mini.winfo_exists():
             return
         cv = self.mini_canvas
         size = self.MINI_SIZE
