@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -1094,8 +1094,28 @@ class TimeTracker(tk.Tk):
         self.mini.geometry(f"+{x}+{y}")
         self.withdraw()
         self.mini.deiconify()
+        self._apply_mini_region()
         self._draw_mini()
         self.save()
+
+    def _apply_mini_region(self):
+        """把方形小图标窗口裁成圆形，去掉四角的深色底（黑框）。
+
+        窗口刚 deiconify 尚未完成映射时应用区域会被丢弃，
+        因此 _draw_mini 每秒都会检查并补上（一次系统调用，开销可忽略）。
+        """
+        try:
+            hwnd = user32.GetAncestor(self.mini.winfo_id(), 2)  # GA_ROOT
+            if not hwnd:
+                return
+            buf = ctypes.windll.gdi32.CreateRectRgn(0, 0, 0, 0)
+            if user32.GetWindowRgn(hwnd, buf) in (2, 3):
+                return  # 区域已在，无需重复
+            rgn = ctypes.windll.gdi32.CreateEllipticRgn(
+                0, 0, self.MINI_SIZE, self.MINI_SIZE)
+            user32.SetWindowRgn(hwnd, rgn, True)
+        except (OSError, AttributeError):
+            pass
 
     def restore_from_mini(self):
         """小图标恢复成完整悬浮条，位置出现在小图标附近。"""
@@ -1129,6 +1149,7 @@ class TimeTracker(tk.Tk):
         ri = r * (0.75 if cat else 0.45)
         cv.create_oval(cx - ri, cy - ri, cx + ri, cy + ri,
                        fill=inner, outline="")
+        self._apply_mini_region()
 
     def mini_drag_start(self, event):
         self.mini_moved = False
