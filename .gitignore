@@ -13,3 +13,11 @@ android/.kotlin/
 android/build/
 android/app/build/
 android/local.properties
+
+# 自查截图与脚本
+capture.ps1
+bar_check.png
+bar_capture*.png
+skins/reed_bg.jpg
+copy.json
+copy.json.bak

@@ -41,7 +41,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.7.2"
+VERSION = "1.7.3"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -65,11 +65,13 @@ ACCENT = "#FFC107"    # 强调色（气泡边条/标题）
 FAMILY = "微软雅黑"   # 界面字体（皮肤可覆盖）
 SKIN_IMAGE = ""       # 皮肤背景图（绝对路径，PNG/GIF）
 SKIN_DIM = 0.0        # 背景图压暗强度 0~1
+SKIN_IMAGE_H = None   # 背景区高度（像素，None=按图片比例）
 
 # 默认配色快照：切回「默认」皮肤时恢复
 _DEFAULTS = {"BG": BG, "PANEL": PANEL, "TRACK": TRACK, "HOVER": HOVER,
              "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT,
-             "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE, "SKIN_DIM": SKIN_DIM}
+             "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE, "SKIN_DIM": SKIN_DIM,
+             "SKIN_IMAGE_H": SKIN_IMAGE_H}
 _DEFAULT_CATS = dict(COLORS)
 
 # 皮肤可覆盖的颜色键 → 对应模块全局名
@@ -108,6 +110,11 @@ def apply_skin(skin, base_dir=""):
         dim = skin.get("image_dim")
         if isinstance(dim, (int, float)) and 0 <= dim <= 1:
             g["SKIN_DIM"] = float(dim)
+            changed = True
+        # 背景区高度
+        ih = skin.get("image_h")
+        if ih is None or isinstance(ih, int) and 24 <= ih <= 400:
+            g["SKIN_IMAGE_H"] = ih
             changed = True
         # 背景图（PNG/GIF，相对皮肤文件所在目录）
         img = skin.get("image")
@@ -948,7 +955,10 @@ class TimeTracker(tk.Tk):
         nat = self._bg_natural()
         banner_h = 0
         if nat:
-            banner_h = max(24, min(int(nat[1] * W / nat[0]), 200))
+            if SKIN_IMAGE_H:
+                banner_h = min(SKIN_IMAGE_H, 400)
+            else:
+                banner_h = max(24, min(int(nat[1] * W / nat[0]), 200))
         s4 = max(9, size - 4)
         gap = 6
         pad_x = 10
@@ -989,14 +999,18 @@ class TimeTracker(tk.Tk):
         cv.delete("all")
         self._regions = []
 
-        # 背景：皮肤图片铺满 + 可选压暗层
+        # 背景：皮肤图片铺满横幅带（缩放溢出部分用底色遮住）+ 可选压暗层
         if L["banner_h"]:
             photo = self._scaled_bg(W, L["banner_h"])
             if photo:
                 cv.create_image(0, 0, image=photo, anchor="nw")
             if SKIN_DIM > 0:
-                cv.create_rectangle(0, 0, W, L["banner_h"], fill=BG,
-                                    stipple="gray25", width=0)
+                stip = ("gray12" if SKIN_DIM <= 0.33 else
+                        "gray25" if SKIN_DIM <= 0.66 else
+                        "gray50" if SKIN_DIM <= 0.85 else "gray75")
+                cv.create_rectangle(0, 0, W, L["banner_h"], fill="#000000",
+                                    stipple=stip, width=0)
+            cv.create_rectangle(0, L["banner_h"], W, L["H"], fill=BG, width=0)
 
         pad_x, x0, colw = L["pad_x"], L["x0"], L["colw"]
         cat_cy, row_cat = L["cat_cy"], L["row_cat"]
@@ -1018,6 +1032,9 @@ class TimeTracker(tk.Tk):
                 self._round_rect(cv, cx + 2, ry + 2, cx + colw - 6,
                                  ry + row_cat - 2, 6,
                                  fill=HOVER, outline="")
+            cv.create_text(cx + 9, cat_cy + 1, anchor="w",
+                           text=f"{dot} {cat} {self.fmt(total)}",
+                           font=(FAMILY, size), fill="#000000")
             cv.create_text(cx + 8, cat_cy, anchor="w",
                            text=f"{dot} {cat} {self.fmt(total)}",
                            font=(FAMILY, size), fill=TXT if hov else fg)
@@ -1038,28 +1055,28 @@ class TimeTracker(tk.Tk):
                                  L["bar_y"] + L["bar_h"], r=L["bar_h"] / 2,
                                  fill=COLORS[cat], outline="")
 
-        # 状态 / 名言行：左名言（超长截断）、右模式切换（累计/今日）
+        # 状态 / 名言行：左模式切换（累计/今日）、右名言（超长截断）
         st_text, st_color = self._status_info()
         st_font = tkfont.Font(family=FAMILY, size=s4, root=self)
         mode_txt = "今日" if self.show_mode == "today" else "累计"
-        mode_w = st_font.measure(mode_txt) + 14
-        avail = W - pad_x - mode_w - 8
+        mode_hov = self._hover == ("mode", None)
+        mode_x2 = pad_x + st_font.measure(mode_txt) + 12
+        if mode_hov:
+            self._round_rect(cv, pad_x - 2, L["st_cy"] - s4,
+                             mode_x2, L["st_cy"] + s4, 5,
+                             fill=HOVER, outline="")
+        cv.create_text(pad_x, L["st_cy"], anchor="w", text=mode_txt,
+                       font=(FAMILY, s4),
+                       fill=TXT if mode_hov else "#9E9E9E")
+        self._regions.append((pad_x - 2, L["st_cy"] - s4 - 2, mode_x2,
+                              L["st_cy"] + s4 + 2, "mode", None))
+        avail = W - mode_x2 - 12
         if st_font.measure(st_text) > avail:
             while st_text and st_font.measure(st_text + "…") > avail:
                 st_text = st_text[:-1]
             st_text += "…"
-        cv.create_text(pad_x, L["st_cy"], anchor="w", text=st_text,
+        cv.create_text(mode_x2 + 6, L["st_cy"], anchor="w", text=st_text,
                        font=(FAMILY, s4), fill=st_color)
-        mode_hov = self._hover == ("mode", None)
-        if mode_hov:
-            self._round_rect(cv, W - 10 - mode_w, L["st_cy"] - s4,
-                             W - 4, L["st_cy"] + s4, 5,
-                             fill=HOVER, outline="")
-        cv.create_text(W - 10 - 4, L["st_cy"], anchor="e", text=mode_txt,
-                       font=(FAMILY, s4),
-                       fill=TXT if mode_hov else "#9E9E9E")
-        self._regions.append((W - 10 - mode_w, L["st_cy"] - s4 - 2, W,
-                              L["st_cy"] + s4 + 2, "mode", None))
 
         # 待办区
         items = self.today_todos()
