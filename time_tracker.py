@@ -1137,12 +1137,12 @@ class TimeTracker(tk.Tk):
             header = f"{arrow} 待办（右键添加）"
         th_hov = self._hover == ("th", None)
         if th_hov:
-            self._round_rect(cv, 4, L["th_y"], W - 4,
+            self._round_rect(cv, pad_x - 2, L["th_y"], W - 4,
                              L["th_y"] + L["hh"], 6, fill=HOVER, outline="")
         cv.create_text(pad_x, L["th_y"] + L["hh"] / 2, anchor="w",
                        text=header, font=(FAMILY, s4),
                        fill=TXT if th_hov else "#9E9E9E")
-        self._regions.append((0, L["th_y"], W, L["th_y"] + L["hh"],
+        self._regions.append((pad_x, L["th_y"], W, L["th_y"] + L["hh"],
                               "th", None))
         if not visible:
             return
