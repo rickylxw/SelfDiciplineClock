@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -61,10 +61,13 @@ HOVER = "#22222B"     # 悬停高亮
 FG_DIM = "#A9A9B2"    # 次级文字
 TXT = "#EAEAEE"       # 主文字
 ACCENT = "#FFC107"    # 强调色（气泡边条/标题）
+FAMILY = "微软雅黑"   # 界面字体（皮肤可覆盖）
+SKIN_IMAGE = ""       # 皮肤横幅图（绝对路径，PNG/GIF）
 
 # 默认配色快照：切回「默认」皮肤时恢复
 _DEFAULTS = {"BG": BG, "PANEL": PANEL, "TRACK": TRACK, "HOVER": HOVER,
-             "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT}
+             "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT,
+             "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE}
 _DEFAULT_CATS = dict(COLORS)
 
 # 皮肤可覆盖的颜色键 → 对应模块全局名
@@ -78,25 +81,34 @@ def valid_color(v):
     return isinstance(v, str) and v.startswith("#") and len(v) in (4, 7)
 
 
-def apply_skin(skin):
-    """把皮肤配色写入模块全局（函数运行时读取，改后即时生效）。"""
-    if not isinstance(skin, dict):
-        return False
-    colors = skin.get("colors")
-    if not isinstance(colors, dict):
-        return False
+def apply_skin(skin, base_dir=""):
+    """把皮肤配置写入模块全局（函数运行时读取，改后即时生效）。"""
     g = globals()
     changed = False
-    for key, gname in SKIN_COLOR_MAP.items():
-        v = colors.get(key)
-        if valid_color(v):
-            g[gname] = v
+    if isinstance(skin, dict):
+        colors = skin.get("colors")
+        if isinstance(colors, dict):
+            for key, gname in SKIN_COLOR_MAP.items():
+                v = colors.get(key)
+                if valid_color(v):
+                    g[gname] = v
+                    changed = True
+            for cat in CATEGORIES:
+                v = colors.get(cat)
+                if valid_color(v):
+                    COLORS[cat] = v
+                    changed = True
+        # 字体
+        if isinstance(skin.get("font"), str) and skin["font"].strip():
+            g["FAMILY"] = skin["font"].strip()
             changed = True
-    for cat in CATEGORIES:
-        v = colors.get(cat)
-        if valid_color(v):
-            COLORS[cat] = v
-            changed = True
+        # 横幅图（PNG/GIF，相对皮肤文件所在目录）
+        img = skin.get("image")
+        if isinstance(img, str) and img:
+            path = img if os.path.isabs(img) else os.path.join(base_dir, img)
+            if os.path.isfile(path) and path.lower().endswith((".png", ".gif")):
+                g["SKIN_IMAGE"] = path
+                changed = True
     return changed
 
 TICK_MS = 1000
@@ -565,6 +577,22 @@ class TimeTracker(tk.Tk):
         bar = tk.Frame(self, bg=BG)
         bar.pack(fill="both", expand=True)
 
+        # 皮肤横幅图（PNG/GIF）：显示在悬浮条顶部，按窗口宽度近似缩放
+        self._skin_img = None
+        if SKIN_IMAGE:
+            try:
+                img = tk.PhotoImage(file=SKIN_IMAGE)
+                target_w = max(360, self.settings.get("font_size", 13) * 36)
+                ratio = target_w / img.width()
+                if ratio >= 2:
+                    img = img.zoom(int(ratio))
+                elif ratio <= 0.5:
+                    img = img.subsample(max(1, round(1 / ratio)))
+                self._skin_img = img  # 保引用防 GC
+                tk.Label(bar, image=img, bg=BG).pack(fill="x")
+            except (tk.TclError, OSError):
+                self._skin_img = None
+
         # 顶部两行共用一个 grid，保证分类文字与进度条严格同列同宽
         grid = tk.Frame(bar, bg=BG)
         grid.pack(fill="x", padx=8, pady=(6, 0))
@@ -572,14 +600,14 @@ class TimeTracker(tk.Tk):
         for col in range(1, 4):
             grid.columnconfigure(col, weight=1, uniform="cat")
 
-        self.mode_btn = tk.Label(grid, text="累计", font=("微软雅黑", 10),
+        self.mode_btn = tk.Label(grid, text="累计", font=(FAMILY, 10),
                                  bg=BG, fg="#888888", cursor="hand2")
         self.mode_btn.grid(row=0, column=0, sticky="w", padx=(2, 6))
         self.mode_btn.bind("<Button-1>", self.toggle_show_mode)
 
         self.labels = {}
         for col, cat in enumerate(CATEGORIES, start=1):
-            lbl = tk.Label(grid, font=("微软雅黑", 13), bg=BG, fg=FG_DIM,
+            lbl = tk.Label(grid, font=(FAMILY, 13), bg=BG, fg=FG_DIM,
                            cursor="hand2")
             lbl.bind("<Enter>", lambda e, l=lbl: l.config(fg=TXT)
                      if self.running_cat is None else None)
@@ -607,12 +635,12 @@ class TimeTracker(tk.Tk):
             self.bars[cat] = canvas
 
         # 底部：状态 / 名言行
-        self.status = tk.Label(bar, text="", font=("微软雅黑", 9),
+        self.status = tk.Label(bar, text="", font=(FAMILY, 9),
                                bg=BG, fg="#888888")
         self.status.pack(fill="x", pady=(1, 4))
 
         # 待办清单（可折叠）：标题行 + 条目区
-        self.todo_header = tk.Label(bar, text="▸ 待办", font=("微软雅黑", 9),
+        self.todo_header = tk.Label(bar, text="▸ 待办", font=(FAMILY, 9),
                                     bg=BG, fg="#9E9E9E", cursor="hand2",
                                     anchor="w")
         self.todo_header.pack(fill="x", padx=8)
@@ -689,9 +717,9 @@ class TimeTracker(tk.Tk):
         """按 settings 中的字号重建悬浮条尺寸与字体。"""
         size = self.settings.get("font_size", 13)
         for cat, lbl in self.labels.items():
-            lbl.config(font=("微软雅黑", size))
-        self.mode_btn.config(font=("微软雅黑", size - 3))
-        self.status.config(font=("微软雅黑", size - 4))
+            lbl.config(font=(FAMILY, size))
+        self.mode_btn.config(font=(FAMILY, size - 3))
+        self.status.config(font=(FAMILY, size - 4))
         bar_h = max(3, size // 4)
         for canvas in self.bars.values():
             canvas.config(height=bar_h)
@@ -1074,7 +1102,7 @@ class TimeTracker(tk.Tk):
         entries = {}
         for i, cat in enumerate(CATEGORIES):
             tk.Label(win, text=f"{cat} 每日目标（小时，0 = 不设目标）",
-                     font=("微软雅黑", 10)).grid(row=i, column=0,
+                     font=(FAMILY, 10)).grid(row=i, column=0,
                                                  padx=10, pady=6, sticky="w")
             var = tk.StringVar()
             hours = self.settings["goals"][cat] / 3600
@@ -1267,9 +1295,9 @@ class TimeTracker(tk.Tk):
         accent.pack(side="left", fill="y")
         pad = tk.Frame(win, bg="#2A2A30", padx=14, pady=10)
         pad.pack(fill="both", expand=True)
-        tk.Label(pad, text=title, font=("微软雅黑", 10, "bold"),
+        tk.Label(pad, text=title, font=(FAMILY, 10, "bold"),
                  bg="#2A2A30", fg=ACCENT).pack(anchor="w")
-        tk.Label(pad, text=message, font=("微软雅黑", 10),
+        tk.Label(pad, text=message, font=(FAMILY, 10),
                  bg="#2A2A30", fg="#EEEEEE", wraplength=260,
                  justify="left").pack(anchor="w", pady=(2, 0))
         win.update_idletasks()
@@ -1772,10 +1800,10 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             cb = tk.Checkbutton(row, variable=var, bg=PANEL, activebackground=PANEL,
                                 selectcolor=TRACK, relief="flat",
                                 highlightthickness=0,
-                                font=("微软雅黑", item_font),
+                                font=(FAMILY, item_font),
                                 command=lambda i=idx: self.toggle_todo_done(i))
             cb.pack(side="left")
-            txt = tk.Label(row, text="", font=("微软雅黑", item_font),
+            txt = tk.Label(row, text="", font=(FAMILY, item_font),
                            bg=PANEL, anchor="w", cursor="hand2")
             txt.pack(side="left", fill="x")
             widgets = (row, cb, txt)
@@ -1801,7 +1829,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                      lambda e, i=idx: self.edit_todo_item(i))
             self._todo_rows.append((var, cb, txt, row))
         self._todo_more = tk.Label(self.todo_body, text="",
-                                   font=("微软雅黑", max(8, size - 5)),
+                                   font=(FAMILY, max(8, size - 5)),
                                    bg=BG, fg="#777777", anchor="w")
         return self._todo_rows
 
@@ -1830,7 +1858,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
                 item = shown[i]
                 done = bool(item.get("done", False))
                 var.set(done)  # 程序设值不触发 command，不会造成递归
-                cb.config(font=("微软雅黑", item_font))
+                cb.config(font=(FAMILY, item_font))
                 txt.config(text=item.get("text", ""))
                 self._style_todo_label(txt, done)
                 if not row.winfo_manager():
@@ -1841,7 +1869,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         if len(items_all) > 5:
             self._todo_more.config(
                 text=f"…还有 {len(items_all) - 5} 条（右键管理）",
-                font=("微软雅黑", max(8, size - 5)))
+                font=(FAMILY, max(8, size - 5)))
             if not self._todo_more.winfo_manager():
                 self._todo_more.pack(fill="x")
         else:
@@ -1850,7 +1878,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
     def _style_todo_label(self, label, done):
         item_font = max(9, self.settings.get("font_size", 13) - 4)
         label.config(fg="#5A5A5A" if done else "#CCCCCC",
-                     font=("微软雅黑", item_font,
+                     font=(FAMILY, item_font,
                            "overstrike" if done else "normal"))
 
     def _todo_touch(self):
@@ -1942,9 +1970,10 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
             try:
                 with open(os.path.join(d, fname), "r", encoding="utf-8") as f:
                     data = json.load(f)
-                if isinstance(data.get("colors"), dict):
+                if isinstance(data.get("colors"), dict) or data.get("image"):
                     skins.append({"file": fname,
                                   "name": data.get("name") or fname[:-5],
+                                  "dir": d,
                                   "data": data})
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 continue  # 坏文件直接跳过
@@ -1953,7 +1982,7 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
     def apply_skin_by_name(self, filename):
         for s in self.load_skins():
             if s["file"] == filename:
-                return apply_skin(s["data"])
+                return apply_skin(s["data"], s["dir"])
         return False
 
     def set_skin(self, filename):
