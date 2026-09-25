@@ -16,5 +16,6 @@
  "image": "reed_bg.png",
  "image_dim": 0.45,
  "image_pos": "left",
- "image_w": 110
+ "image_w": 110,
+ "show_dot": true
 }

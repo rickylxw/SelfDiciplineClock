@@ -68,12 +68,13 @@ SKIN_DIM = 0.0        # 背景图压暗强度 0~1
 SKIN_IMAGE_H = None   # 背景区高度（像素，None=按图片比例）
 SKIN_IMAGE_POS = "top"  # 图片位置：top 横幅 / left 左侧立绘
 SKIN_IMAGE_W = 90      # 左侧立绘宽度
+SKIN_SHOW_DOT = True   # 分类名前是否显示状态圆点
 # 默认配色快照：切回「默认」皮肤时恢复
 _DEFAULTS = {"BG": BG, "PANEL": PANEL, "TRACK": TRACK, "HOVER": HOVER,
              "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT,
              "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE, "SKIN_DIM": SKIN_DIM,
              "SKIN_IMAGE_H": SKIN_IMAGE_H, "SKIN_IMAGE_POS": SKIN_IMAGE_POS,
-             "SKIN_IMAGE_W": SKIN_IMAGE_W}
+             "SKIN_IMAGE_W": SKIN_IMAGE_W, "SKIN_SHOW_DOT": SKIN_SHOW_DOT}
 _DEFAULT_CATS = dict(COLORS)
 
 # 皮肤可覆盖的颜色键 → 对应模块全局名
@@ -126,6 +127,11 @@ def apply_skin(skin, base_dir=""):
         iw = skin.get("image_w")
         if isinstance(iw, int) and 40 <= iw <= 300:
             g["SKIN_IMAGE_W"] = iw
+            changed = True
+        # 分类前圆点开关
+        sd = skin.get("show_dot")
+        if isinstance(sd, bool):
+            g["SKIN_SHOW_DOT"] = sd
             changed = True
         # 背景图（PNG/GIF，相对皮肤文件所在目录）
         img = skin.get("image")
@@ -1057,6 +1063,8 @@ class TimeTracker(tk.Tk):
                 fg, dot = COLORS[cat], "◐"
             else:
                 fg, dot = FG_DIM, "○"
+            if not SKIN_SHOW_DOT:
+                dot = ""
             hov = self._hover == ("cat", cat)
             ry = cat_cy - row_cat / 2
             if hov:
@@ -1064,10 +1072,10 @@ class TimeTracker(tk.Tk):
                                  ry + row_cat - 2, 6,
                                  fill=HOVER, outline="")
             cv.create_text(cx + 9, cat_cy + 1, anchor="w",
-                           text=f"{dot} {cat} {self.fmt(total)}",
+                           text=f"{dot + ' ' if dot else ''}{cat} {self.fmt(total)}",
                            font=(FAMILY, size), fill="#000000")
             cv.create_text(cx + 8, cat_cy, anchor="w",
-                           text=f"{dot} {cat} {self.fmt(total)}",
+                           text=f"{dot + ' ' if dot else ''}{cat} {self.fmt(total)}",
                            font=(FAMILY, size), fill=TXT if hov else fg)
             self._regions.append((cx, ry, cx + colw - 4, ry + row_cat,
                                   "cat", cat))
@@ -1137,7 +1145,7 @@ class TimeTracker(tk.Tk):
             done = bool(item.get("done", False))
             hov = self._hover == ("todo", i)
             if hov:
-                cv.create_rectangle(4, ry, W - 4, ry + L["row_h"],
+                cv.create_rectangle(pad_x - 4, ry, W - 4, ry + L["row_h"],
                                     fill=HOVER, width=0)
             cy = ry + L["row_h"] / 2
             r = s4 / 2 + 1
@@ -1153,7 +1161,7 @@ class TimeTracker(tk.Tk):
                 if bb:
                     cv.create_line(bb[0], cy, bb[2], cy,
                                    fill="#777777", width=1)
-            self._regions.append((0, ry, W, ry + L["row_h"], "todo", i))
+            self._regions.append((pad_x, ry, W, ry + L["row_h"], "todo", i))
 
         if len(items) > 5:
             cv.create_text(pad_x, L["th_y"] + L["hh"] + 5 * L["row_h"] + 4,
