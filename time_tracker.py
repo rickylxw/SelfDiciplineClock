@@ -958,13 +958,22 @@ class TimeTracker(tk.Tk):
                 z = 1
             return z, d
 
-        zx, dx = plan(W, nat[0])
-        zy, dy = plan(H, nat[1])
+        # 横纵统一缩放因子（cover：等比放大到覆盖盒子，居中裁掉溢出），
+        # 两轴独立选档会导致宽高比失真（纵向拉伸）
+        f = max(W / nat[0], H / nat[1])
+        if f >= 1:
+            z = min(4, max(1, round(f)))
+            d = max(1, round(z / f))
+            while z / d < f and z < 4:
+                d = max(1, d - 1)
+        else:
+            d = min(4, max(1, int(1 / f) + 1))
+            z = 1
+            while 1 / d < f and d > 1:
+                d -= 1
         img = tk.PhotoImage(file=SKIN_IMAGE)
-        if (zx, zy) != (1, 1):
-            img = img.zoom(zx, zy)
-        if (dx, dy) != (1, 1):
-            img = img.subsample(dx, dy)
+        if (z, d) != (1, 1):
+            img = img.zoom(z, z).subsample(d, d)
         if SKIN_DIM > 0:
             self._dim_photo(img, SKIN_DIM)
         self._img_cache.clear()  # 只保留当前尺寸，防止内存累积
