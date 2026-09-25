@@ -965,8 +965,27 @@ class TimeTracker(tk.Tk):
             img = img.zoom(zx, zy)
         if (dx, dy) != (1, 1):
             img = img.subsample(dx, dy)
+        if SKIN_DIM > 0:
+            self._dim_photo(img, SKIN_DIM)
         self._img_cache.clear()  # 只保留当前尺寸，防止内存累积
         self._img_cache[key] = img
+        return img
+
+    def _dim_photo(self, img, dim):
+        """像素级压暗（缩放后的小图，一次性处理并缓存）。"""
+        keep = 1.0 - dim
+        w = img.width()
+        for y, row in enumerate(img.data()):
+            out = []
+            for px in row.split():
+                if len(px) == 7 and px.startswith("#"):
+                    out.append("#%02x%02x%02x" % (
+                        int(int(px[1:3], 16) * keep),
+                        int(int(px[3:5], 16) * keep),
+                        int(int(px[5:7], 16) * keep)))
+                else:
+                    out.append(px)  # 透明像素 {} 原样保留
+            img.put("{" + " ".join(out) + "}", to=(0, y, w, y + 1))
         return img
 
     def _layout(self, W, size):
@@ -1030,23 +1049,13 @@ class TimeTracker(tk.Tk):
                 ox = (L["img_w"] - photo.width()) // 2   # 居中裁切
                 oy = (L["H"] - photo.height()) // 2
                 cv.create_image(ox, oy, image=photo, anchor="nw")
-            if SKIN_DIM > 0:
-                stip = ("gray12" if SKIN_DIM <= 0.33 else
-                        "gray25" if SKIN_DIM <= 0.66 else
-                        "gray50" if SKIN_DIM <= 0.85 else "gray75")
-                cv.create_rectangle(0, 0, L["img_w"], L["H"], fill="#000000",
-                                    stipple=stip, width=0)
+
             cv.create_rectangle(L["img_w"], 0, W, L["H"], fill=BG, width=0)
         elif L["banner_h"]:
             photo = self._scaled_bg(W, L["banner_h"])
             if photo:
                 cv.create_image(0, 0, image=photo, anchor="nw")
-            if SKIN_DIM > 0:
-                stip = ("gray12" if SKIN_DIM <= 0.33 else
-                        "gray25" if SKIN_DIM <= 0.66 else
-                        "gray50" if SKIN_DIM <= 0.85 else "gray75")
-                cv.create_rectangle(0, 0, W, L["banner_h"], fill="#000000",
-                                    stipple=stip, width=0)
+
             cv.create_rectangle(0, L["banner_h"], W, L["H"], fill=BG, width=0)
 
         pad_x, x0, colw = L["pad_x"], L["x0"], L["colw"]
