@@ -41,7 +41,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.7.3"
+VERSION = "1.8.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -66,12 +66,14 @@ FAMILY = "微软雅黑"   # 界面字体（皮肤可覆盖）
 SKIN_IMAGE = ""       # 皮肤背景图（绝对路径，PNG/GIF）
 SKIN_DIM = 0.0        # 背景图压暗强度 0~1
 SKIN_IMAGE_H = None   # 背景区高度（像素，None=按图片比例）
-
+SKIN_IMAGE_POS = "top"  # 图片位置：top 横幅 / left 左侧立绘
+SKIN_IMAGE_W = 90      # 左侧立绘宽度
 # 默认配色快照：切回「默认」皮肤时恢复
 _DEFAULTS = {"BG": BG, "PANEL": PANEL, "TRACK": TRACK, "HOVER": HOVER,
              "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT,
              "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE, "SKIN_DIM": SKIN_DIM,
-             "SKIN_IMAGE_H": SKIN_IMAGE_H}
+             "SKIN_IMAGE_H": SKIN_IMAGE_H, "SKIN_IMAGE_POS": SKIN_IMAGE_POS,
+             "SKIN_IMAGE_W": SKIN_IMAGE_W}
 _DEFAULT_CATS = dict(COLORS)
 
 # 皮肤可覆盖的颜色键 → 对应模块全局名
@@ -115,6 +117,15 @@ def apply_skin(skin, base_dir=""):
         ih = skin.get("image_h")
         if ih is None or isinstance(ih, int) and 24 <= ih <= 400:
             g["SKIN_IMAGE_H"] = ih
+            changed = True
+        # 图片位置与左侧宽度
+        pos = skin.get("image_pos")
+        if pos in ("top", "left"):
+            g["SKIN_IMAGE_POS"] = pos
+            changed = True
+        iw = skin.get("image_w")
+        if isinstance(iw, int) and 40 <= iw <= 300:
+            g["SKIN_IMAGE_W"] = iw
             changed = True
         # 背景图（PNG/GIF，相对皮肤文件所在目录）
         img = skin.get("image")
@@ -675,7 +686,9 @@ class TimeTracker(tk.Tk):
         s4 = max(9, size - 4)
         f = tkfont.Font(family=FAMILY, size=size, root=self)
         text_w = f.measure(f"○ {CATEGORIES[0]} 00:00:00") + 20
-        w = max(360, int(10 + (text_w + 8) * 3 + 12))
+        left_mode = SKIN_IMAGE and SKIN_IMAGE_POS == "left"
+        img_w = max(40, min(SKIN_IMAGE_W, 300)) if left_mode else 0
+        w = max(360, int(img_w + 12 + (text_w + 8) * 3 + 22))
         self.update_idletasks()
         L = self._layout(w, size)
         x, y = self.winfo_x(), self.winfo_y()
@@ -952,16 +965,20 @@ class TimeTracker(tk.Tk):
 
     def _layout(self, W, size):
         """计算画布布局几何与窗口总高（行高 + 固定间距模型）。"""
+        left_mode = SKIN_IMAGE and SKIN_IMAGE_POS == "left"
         nat = self._bg_natural()
         banner_h = 0
-        if nat:
+        if nat and not left_mode:
             if SKIN_IMAGE_H:
                 banner_h = min(SKIN_IMAGE_H, 400)
             else:
                 banner_h = max(24, min(int(nat[1] * W / nat[0]), 200))
+        img_w = 0
+        if left_mode:
+            img_w = max(40, min(SKIN_IMAGE_W, 300))
         s4 = max(9, size - 4)
         gap = 6
-        pad_x = 10
+        pad_x = (img_w + 12) if left_mode else 10
         row_cat = int(size * 2.0)
         bar_h = max(4, size // 3)
         row_st = int(s4 * 1.9)
@@ -981,11 +998,12 @@ class TimeTracker(tk.Tk):
             area_h += n * row_h + (int(s4 * 1.4) + 6 if more else 0)
         H = int(th_y + area_h + 8)
         x0 = pad_x
-        colw = (W - 8 - x0) / 3
+        colw = (W - 12 - x0) / 3
         return dict(banner_h=banner_h, cat_cy=int(cat_cy), row_cat=row_cat,
                     bar_h=bar_h, bar_y=int(bar_y), st_cy=int(st_cy),
                     th_y=int(th_y), hh=hh, row_h=row_h, n=n, more=more,
-                    visible=visible, pad_x=pad_x, x0=x0, colw=colw, W=W, H=H)
+                    visible=visible, pad_x=pad_x, x0=x0, colw=colw, W=W, H=H,
+                    img_w=img_w)
 
     def _render(self):
         """全量重绘画布（内容项少，1Hz 全绘无压力）。"""
@@ -999,8 +1017,21 @@ class TimeTracker(tk.Tk):
         cv.delete("all")
         self._regions = []
 
-        # 背景：皮肤图片铺满横幅带（缩放溢出部分用底色遮住）+ 可选压暗层
-        if L["banner_h"]:
+        # 背景：图片 either 左侧立绘（搜狗式）or 顶部横幅带 + 可选压暗层
+        if SKIN_IMAGE and SKIN_IMAGE_POS == "left" and L["img_w"]:
+            photo = self._scaled_bg(L["img_w"], L["H"])
+            if photo:
+                ox = (L["img_w"] - photo.width()) // 2   # 居中裁切
+                oy = (L["H"] - photo.height()) // 2
+                cv.create_image(ox, oy, image=photo, anchor="nw")
+            if SKIN_DIM > 0:
+                stip = ("gray12" if SKIN_DIM <= 0.33 else
+                        "gray25" if SKIN_DIM <= 0.66 else
+                        "gray50" if SKIN_DIM <= 0.85 else "gray75")
+                cv.create_rectangle(0, 0, L["img_w"], L["H"], fill="#000000",
+                                    stipple=stip, width=0)
+            cv.create_rectangle(L["img_w"], 0, W, L["H"], fill=BG, width=0)
+        elif L["banner_h"]:
             photo = self._scaled_bg(W, L["banner_h"])
             if photo:
                 cv.create_image(0, 0, image=photo, anchor="nw")
