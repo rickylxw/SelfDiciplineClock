@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -61,6 +61,11 @@ HOVER = "#22222B"     # 悬停高亮
 FG_DIM = "#A9A9B2"    # 次级文字
 TXT = "#EAEAEE"       # 主文字
 ACCENT = "#FFC107"    # 强调色（气泡边条/标题）
+
+# 默认配色快照：切回「默认」皮肤时恢复
+_DEFAULTS = {"BG": BG, "PANEL": PANEL, "TRACK": TRACK, "HOVER": HOVER,
+             "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT}
+_DEFAULT_CATS = dict(COLORS)
 
 # 皮肤可覆盖的颜色键 → 对应模块全局名
 SKIN_COLOR_MAP = {
@@ -1952,7 +1957,14 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         return False
 
     def set_skin(self, filename):
-        self.apply_skin_by_name(filename)
+        if filename:
+            self.apply_skin_by_name(filename)
+        else:  # 恢复默认配色
+            g = globals()
+            for gname, v in _DEFAULTS.items():
+                g[gname] = v
+            COLORS.clear()
+            COLORS.update(_DEFAULT_CATS)
         self.settings["skin"] = filename
         self.save()
         self.rebuild_ui()
