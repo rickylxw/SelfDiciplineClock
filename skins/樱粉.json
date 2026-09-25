@@ -1,0 +1,16 @@
+{
+ "name": "樱粉",
+ "author": "示例皮肤",
+ "colors": {
+  "bg": "#2B2024",
+  "panel": "#332630",
+  "track": "#4A3944",
+  "hover": "#3D2E38",
+  "fg_dim": "#D8B8C8",
+  "text": "#FFE8F1",
+  "accent": "#FF7BA9",
+  "工作": "#FF6B9D",
+  "游戏": "#FFB347",
+  "学习": "#BA90FF"
+ }
+}

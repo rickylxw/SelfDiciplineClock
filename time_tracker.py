@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -60,6 +60,39 @@ TRACK = "#2A2A33"     # 进度条轨道
 HOVER = "#22222B"     # 悬停高亮
 FG_DIM = "#A9A9B2"    # 次级文字
 TXT = "#EAEAEE"       # 主文字
+ACCENT = "#FFC107"    # 强调色（气泡边条/标题）
+
+# 皮肤可覆盖的颜色键 → 对应模块全局名
+SKIN_COLOR_MAP = {
+    "bg": "BG", "panel": "PANEL", "track": "TRACK", "hover": "HOVER",
+    "fg_dim": "FG_DIM", "text": "TXT", "accent": "ACCENT",
+}
+
+
+def valid_color(v):
+    return isinstance(v, str) and v.startswith("#") and len(v) in (4, 7)
+
+
+def apply_skin(skin):
+    """把皮肤配色写入模块全局（函数运行时读取，改后即时生效）。"""
+    if not isinstance(skin, dict):
+        return False
+    colors = skin.get("colors")
+    if not isinstance(colors, dict):
+        return False
+    g = globals()
+    changed = False
+    for key, gname in SKIN_COLOR_MAP.items():
+        v = colors.get(key)
+        if valid_color(v):
+            g[gname] = v
+            changed = True
+    for cat in CATEGORIES:
+        v = colors.get(cat)
+        if valid_color(v):
+            COLORS[cat] = v
+            changed = True
+    return changed
 
 TICK_MS = 1000
 
@@ -486,6 +519,7 @@ class TimeTracker(tk.Tk):
         self.dlg = tk.Toplevel(self)
         self.dlg.withdraw()
         self._topmost_done = set()  # 已打上置顶的弹窗，避免重复抢层级
+        self.apply_skin_by_name(self.settings.get("skin", ""))  # 启动即换肤
         self.build_ui()
         if self.settings.get("mini"):
             self.minimize_to_mini()
@@ -620,6 +654,16 @@ class TimeTracker(tk.Tk):
                               command=self.minimize_to_mini)
         self.menu.add_command(label="大小：按住 Ctrl 滚动滚轮调节",
                               state="disabled")
+        skin_menu = tk.Menu(self.menu, tearoff=0)
+        self.menu.add_cascade(label="皮肤", menu=skin_menu)
+        self.skin_var = tk.StringVar(value=self.settings.get("skin", ""))
+        skin_menu.add_radiobutton(label="默认", value="",
+                                  variable=self.skin_var,
+                                  command=lambda: self.set_skin(""))
+        for s in self.load_skins():
+            skin_menu.add_radiobutton(
+                label=s["name"], value=s["file"], variable=self.skin_var,
+                command=lambda f=s["file"]: self.set_skin(f))
         self.menu.add_separator()
         self.autostart_item = tk.BooleanVar(value=autostart_enabled())
         self.menu.add_checkbutton(label="开机自启",
@@ -1139,6 +1183,8 @@ class TimeTracker(tk.Tk):
             return
         cv = self.mini_canvas
         size = self.MINI_SIZE
+        cv.config(bg=BG)
+        self.mini.config(bg=BG)
         cv.delete("all")
         r = size / 2 - 2
         cx = cy = size / 2
@@ -1212,12 +1258,12 @@ class TimeTracker(tk.Tk):
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.92)
         win.configure(bg="#2A2A30")
-        accent = tk.Frame(win, bg="#FFC107", width=3)
+        accent = tk.Frame(win, bg=ACCENT, width=3)
         accent.pack(side="left", fill="y")
         pad = tk.Frame(win, bg="#2A2A30", padx=14, pady=10)
         pad.pack(fill="both", expand=True)
         tk.Label(pad, text=title, font=("微软雅黑", 10, "bold"),
-                 bg="#2A2A30", fg="#FFC107").pack(anchor="w")
+                 bg="#2A2A30", fg=ACCENT).pack(anchor="w")
         tk.Label(pad, text=message, font=("微软雅黑", 10),
                  bg="#2A2A30", fg="#EEEEEE", wraplength=260,
                  justify="left").pack(anchor="w", pady=(2, 0))
@@ -1873,6 +1919,67 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
         self.data["todos"] = clean
         self.settings["todos_updated_ts"] = ts
         return True
+
+    # ---------------- 皮肤插件 ----------------
+
+    def skins_dir(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "skins")
+
+    def load_skins(self):
+        """扫描 skins/ 目录下的 *.json 皮肤文件，返回合法的皮肤列表。"""
+        skins = []
+        d = self.skins_dir()
+        try:
+            files = sorted(f for f in os.listdir(d) if f.lower().endswith(".json"))
+        except OSError:
+            return skins
+        for fname in files:
+            try:
+                with open(os.path.join(d, fname), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data.get("colors"), dict):
+                    skins.append({"file": fname,
+                                  "name": data.get("name") or fname[:-5],
+                                  "data": data})
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                continue  # 坏文件直接跳过
+        return skins
+
+    def apply_skin_by_name(self, filename):
+        for s in self.load_skins():
+            if s["file"] == filename:
+                return apply_skin(s["data"])
+        return False
+
+    def set_skin(self, filename):
+        self.apply_skin_by_name(filename)
+        self.settings["skin"] = filename
+        self.save()
+        self.rebuild_ui()
+        name = next((s["name"] for s in self.load_skins()
+                     if s["file"] == filename), "默认")
+        self.toast("皮肤", f"已切换到「{name}」。")
+
+    def rebuild_ui(self):
+        """换肤后重建悬浮条控件（self 上的拖动/缩放绑定先解绑防重复）。"""
+        for seq in ("<Button-1>", "<B1-Motion>", "<ButtonRelease-1>",
+                    "<Control-MouseWheel>"):
+            self.unbind(seq)
+        keep = {id(self.dlg), id(getattr(self, "mini", None))}
+        for w in list(self.winfo_children()):
+            if id(w) in keep or getattr(w, "_is_toast", False):
+                continue
+            w.destroy()
+        try:
+            self.menu.destroy()
+        except (KeyError, tk.TclError):
+            pass
+        self._todo_rows = None   # 待办槽位随新配色重建
+        self._topmost_done = set()
+        self.configure(bg=BG)    # 根窗口底色不随 build_ui 重建，需单独刷新
+        self.build_ui()
+        self.apply_ui_size()
+        self.refresh()
 
     # ---------------- 通用 ----------------
 

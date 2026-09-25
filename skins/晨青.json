@@ -1,0 +1,16 @@
+{
+ "name": "晨青",
+ "author": "示例皮肤",
+ "colors": {
+  "bg": "#10202A",
+  "panel": "#16292F",
+  "track": "#23404A",
+  "hover": "#1C333C",
+  "fg_dim": "#9FC4CC",
+  "text": "#E2F4F7",
+  "accent": "#35D0BA",
+  "工作": "#35D0BA",
+  "游戏": "#F4A261",
+  "学习": "#5CA8FF"
+ }
+}
