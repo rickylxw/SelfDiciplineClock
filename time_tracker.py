@@ -40,6 +40,8 @@ CATEGORIES = ["工作", "游戏", "学习"]
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.json")
 
 APP_NAME = "DesktopTimeTracker"
+LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         ".instance.lock")
 
 VERSION = "1.8.0"
 _REPO = "rickylxw/SelfDiciplineClock"
@@ -539,6 +541,7 @@ class TimeTracker(tk.Tk):
         self.configure(bg=BG)
         self.position_window()
         self.after(200, self.apply_rounded_corners)
+        self.after(300, self._write_hwnd_lock)
 
         # 运行状态
         self.running_cat = None
@@ -576,6 +579,15 @@ class TimeTracker(tk.Tk):
         self.hotkey_loop()
         self.sync_loop()
         self.after(15000, self.silent_update_check)
+
+    def _write_hwnd_lock(self):
+        """把主窗口句柄写入锁文件，供重复启动时唤醒已有实例。"""
+        try:
+            hwnd = user32.GetAncestor(self.winfo_id(), 2)  # GA_ROOT
+            with open(LOCK_FILE, "w") as f:
+                f.write(str(hwnd))
+        except OSError:
+            pass
 
     def apply_rounded_corners(self):
         """Win11 DWM 圆角（DWMWA_WINDOW_CORNER_PREFERENCE=33, ROUND=2）。
@@ -2227,6 +2239,10 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
     def on_close(self):
         self.stop_and_save()
         self.stop_host()
+        try:
+            os.remove(LOCK_FILE)
+        except OSError:
+            pass
         if not self.locked and not self.settings.get("mini"):
             self.data["geometry"] = [self.winfo_x(), self.winfo_y()]
         self.settings["mini"] = False  # 下次启动恢复完整悬浮条
@@ -2237,5 +2253,18 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
 
 
 if __name__ == "__main__":
+    import ctypes
+    ctypes.windll.kernel32.CreateMutexW(None, False,
+                                        "DesktopTimeTracker_Instance")
+    if ctypes.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        # 已有实例在运行：把它带到前台，本次启动直接退出
+        try:
+            with open(LOCK_FILE) as f:
+                hwnd = int(f.read().strip())
+            if hwnd and ctypes.windll.user32.IsWindowVisible(hwnd):
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except (OSError, ValueError):
+            pass
+        sys.exit(0)
     app = TimeTracker()
     app.mainloop()

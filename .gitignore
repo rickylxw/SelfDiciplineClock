@@ -21,3 +21,6 @@ bar_capture*.png
 skins/reed_bg.jpg
 copy.json
 copy.json.bak
+
+# 单实例锁
+.instance.lock
