@@ -944,21 +944,23 @@ class TimeTracker(tk.Tk):
         return img
 
     def _layout(self, W, size):
-        """计算画布布局几何与窗口总高。"""
+        """计算画布布局几何与窗口总高（行高 + 固定间距模型）。"""
         nat = self._bg_natural()
         banner_h = 0
         if nat:
             banner_h = max(24, min(int(nat[1] * W / nat[0]), 200))
         s4 = max(9, size - 4)
+        gap = 6
         pad_x = 10
-        y = banner_h + 6
-        rh = int(size * 1.9)
-        bar_h = max(3, size // 4)
-        bar_y = y + rh + 3
-        st_y = bar_y + bar_h + 5
-        st_h = s4 + 4
-        th_y = st_y + st_h + 2
-        hh = int(s4 * 1.7)
+        row_cat = int(size * 2.0)
+        bar_h = max(4, size // 3)
+        row_st = int(s4 * 1.9)
+        y = banner_h + 8
+        cat_cy = y + row_cat / 2
+        bar_y = y + row_cat + gap
+        st_cy = bar_y + bar_h + gap + row_st / 2
+        th_y = st_cy + row_st / 2 + gap
+        hh = int(s4 * 1.7) + 4
         items = self.today_todos()
         visible = self.settings.get("todo_visible", True)
         n = min(5, len(items)) if visible else 0
@@ -966,12 +968,13 @@ class TimeTracker(tk.Tk):
         row_h = int(s4 * 1.8)
         area_h = hh
         if visible:
-            area_h += n * row_h + (int(s4 * 1.4) + 4 if more else 0)
-        H = th_y + area_h + 6
+            area_h += n * row_h + (int(s4 * 1.4) + 6 if more else 0)
+        H = int(th_y + area_h + 8)
         x0 = pad_x
         colw = (W - 8 - x0) / 3
-        return dict(banner_h=banner_h, y=y, rh=rh, bar_h=bar_h, bar_y=bar_y,
-                    st_y=st_y, th_y=th_y, hh=hh, row_h=row_h, n=n, more=more,
+        return dict(banner_h=banner_h, cat_cy=int(cat_cy), row_cat=row_cat,
+                    bar_h=bar_h, bar_y=int(bar_y), st_cy=int(st_cy),
+                    th_y=int(th_y), hh=hh, row_h=row_h, n=n, more=more,
                     visible=visible, pad_x=pad_x, x0=x0, colw=colw, W=W, H=H)
 
     def _render(self):
@@ -996,7 +999,7 @@ class TimeTracker(tk.Tk):
                                     stipple="gray25", width=0)
 
         pad_x, x0, colw = L["pad_x"], L["x0"], L["colw"]
-        y, rh = L["y"], L["rh"]
+        cat_cy, row_cat = L["cat_cy"], L["row_cat"]
 
         # 分类行（模式切换挪到状态行右端，避免左侧孤字）
         for i, cat in enumerate(CATEGORIES):
@@ -1010,13 +1013,16 @@ class TimeTracker(tk.Tk):
             else:
                 fg, dot = FG_DIM, "○"
             hov = self._hover == ("cat", cat)
+            ry = cat_cy - row_cat / 2
             if hov:
-                self._round_rect(cv, cx + 2, y + 2, cx + colw - 6, y + rh, 6,
+                self._round_rect(cv, cx + 2, ry + 2, cx + colw - 6,
+                                 ry + row_cat - 2, 6,
                                  fill=HOVER, outline="")
-            cv.create_text(cx + 8, y + rh / 2, anchor="w",
+            cv.create_text(cx + 8, cat_cy, anchor="w",
                            text=f"{dot} {cat} {self.fmt(total)}",
                            font=(FAMILY, size), fill=TXT if hov else fg)
-            self._regions.append((cx, y, cx + colw - 4, y + rh, "cat", cat))
+            self._regions.append((cx, ry, cx + colw - 4, ry + row_cat,
+                                  "cat", cat))
             bx, bw = cx + 4, colw - 12
             goal = self.settings["goals"].get(cat, 0)
             self._round_rect(cv, bx, L["bar_y"], bx + bw,
@@ -1032,17 +1038,28 @@ class TimeTracker(tk.Tk):
                                  L["bar_y"] + L["bar_h"], r=L["bar_h"] / 2,
                                  fill=COLORS[cat], outline="")
 
-        # 状态 / 名言行：左名言、右模式切换（累计/今日）
+        # 状态 / 名言行：左名言（超长截断）、右模式切换（累计/今日）
         st_text, st_color = self._status_info()
-        cv.create_text(pad_x, L["st_y"], anchor="w", text=st_text,
-                       font=(FAMILY, s4), fill=st_color)
+        st_font = tkfont.Font(family=FAMILY, size=s4, root=self)
         mode_txt = "今日" if self.show_mode == "today" else "累计"
+        mode_w = st_font.measure(mode_txt) + 14
+        avail = W - pad_x - mode_w - 8
+        if st_font.measure(st_text) > avail:
+            while st_text and st_font.measure(st_text + "…") > avail:
+                st_text = st_text[:-1]
+            st_text += "…"
+        cv.create_text(pad_x, L["st_cy"], anchor="w", text=st_text,
+                       font=(FAMILY, s4), fill=st_color)
         mode_hov = self._hover == ("mode", None)
-        cv.create_text(W - 10, L["st_y"], anchor="e", text=mode_txt,
+        if mode_hov:
+            self._round_rect(cv, W - 10 - mode_w, L["st_cy"] - s4,
+                             W - 4, L["st_cy"] + s4, 5,
+                             fill=HOVER, outline="")
+        cv.create_text(W - 10 - 4, L["st_cy"], anchor="e", text=mode_txt,
                        font=(FAMILY, s4),
                        fill=TXT if mode_hov else "#9E9E9E")
-        self._regions.append((W - 60, L["st_y"] - 3, W,
-                              L["st_y"] + s4 + 3, "mode", None))
+        self._regions.append((W - 10 - mode_w, L["st_cy"] - s4 - 2, W,
+                              L["st_cy"] + s4 + 2, "mode", None))
 
         # 待办区
         items = self.today_todos()
