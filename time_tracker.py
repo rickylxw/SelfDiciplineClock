@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import messagebox, filedialog, simpledialog, ttk
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -40,7 +41,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -660,9 +661,14 @@ class TimeTracker(tk.Tk):
         self.apply_ui_size()
 
     def apply_ui_size(self):
-        """按字号与待办数量计算窗口尺寸（画布内容随之重绘）。"""
+        """按字号与待办数量计算窗口尺寸（画布内容随之重绘）。
+
+        宽度用 tkfont 实测分类文本宽，列再窄也不会挤压错位。"""
         size = self.settings.get("font_size", 13)
-        w = max(360, size * 36)
+        s4 = max(9, size - 4)
+        f = tkfont.Font(family=FAMILY, size=size, root=self)
+        text_w = f.measure(f"○ {CATEGORIES[0]} 00:00:00") + 20
+        w = max(360, int(10 + (text_w + 8) * 3 + 12))
         self.update_idletasks()
         L = self._layout(w, size)
         x, y = self.winfo_x(), self.winfo_y()
@@ -962,7 +968,7 @@ class TimeTracker(tk.Tk):
         if visible:
             area_h += n * row_h + (int(s4 * 1.4) + 4 if more else 0)
         H = th_y + area_h + 6
-        x0 = pad_x + 46
+        x0 = pad_x
         colw = (W - 8 - x0) / 3
         return dict(banner_h=banner_h, y=y, rh=rh, bar_h=bar_h, bar_y=bar_y,
                     st_y=st_y, th_y=th_y, hh=hh, row_h=row_h, n=n, more=more,
@@ -992,18 +998,7 @@ class TimeTracker(tk.Tk):
         pad_x, x0, colw = L["pad_x"], L["x0"], L["colw"]
         y, rh = L["y"], L["rh"]
 
-        # 模式切换（累计/今日）
-        mode_txt = "今日" if self.show_mode == "today" else "累计"
-        hover = self._hover == ("mode", None)
-        if hover:
-            self._round_rect(cv, 4, y + 4, pad_x + 42, y + rh - 2, 6,
-                             fill=HOVER, outline="")
-        cv.create_text(pad_x + 2, y + rh / 2, text=mode_txt, anchor="w",
-                       font=(FAMILY, size - 3),
-                       fill=TXT if hover else FG_DIM)
-        self._regions.append((4, y, pad_x + 46, y + rh, "mode", None))
-
-        # 分类行 + 进度条
+        # 分类行（模式切换挪到状态行右端，避免左侧孤字）
         for i, cat in enumerate(CATEGORIES):
             cx = x0 + i * colw
             total = self.display_seconds(cat)
@@ -1037,10 +1032,17 @@ class TimeTracker(tk.Tk):
                                  L["bar_y"] + L["bar_h"], r=L["bar_h"] / 2,
                                  fill=COLORS[cat], outline="")
 
-        # 状态 / 名言行
+        # 状态 / 名言行：左名言、右模式切换（累计/今日）
         st_text, st_color = self._status_info()
         cv.create_text(pad_x, L["st_y"], anchor="w", text=st_text,
                        font=(FAMILY, s4), fill=st_color)
+        mode_txt = "今日" if self.show_mode == "today" else "累计"
+        mode_hov = self._hover == ("mode", None)
+        cv.create_text(W - 10, L["st_y"], anchor="e", text=mode_txt,
+                       font=(FAMILY, s4),
+                       fill=TXT if mode_hov else "#9E9E9E")
+        self._regions.append((W - 60, L["st_y"] - 3, W,
+                              L["st_y"] + s4 + 3, "mode", None))
 
         # 待办区
         items = self.today_todos()
