@@ -40,7 +40,7 @@ DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "time_data.
 
 APP_NAME = "DesktopTimeTracker"
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -62,12 +62,13 @@ FG_DIM = "#A9A9B2"    # 次级文字
 TXT = "#EAEAEE"       # 主文字
 ACCENT = "#FFC107"    # 强调色（气泡边条/标题）
 FAMILY = "微软雅黑"   # 界面字体（皮肤可覆盖）
-SKIN_IMAGE = ""       # 皮肤横幅图（绝对路径，PNG/GIF）
+SKIN_IMAGE = ""       # 皮肤背景图（绝对路径，PNG/GIF）
+SKIN_DIM = 0.0        # 背景图压暗强度 0~1
 
 # 默认配色快照：切回「默认」皮肤时恢复
 _DEFAULTS = {"BG": BG, "PANEL": PANEL, "TRACK": TRACK, "HOVER": HOVER,
              "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT,
-             "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE}
+             "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE, "SKIN_DIM": SKIN_DIM}
 _DEFAULT_CATS = dict(COLORS)
 
 # 皮肤可覆盖的颜色键 → 对应模块全局名
@@ -102,7 +103,12 @@ def apply_skin(skin, base_dir=""):
         if isinstance(skin.get("font"), str) and skin["font"].strip():
             g["FAMILY"] = skin["font"].strip()
             changed = True
-        # 横幅图（PNG/GIF，相对皮肤文件所在目录）
+        # 背景压暗
+        dim = skin.get("image_dim")
+        if isinstance(dim, (int, float)) and 0 <= dim <= 1:
+            g["SKIN_DIM"] = float(dim)
+            changed = True
+        # 背景图（PNG/GIF，相对皮肤文件所在目录）
         img = skin.get("image")
         if isinstance(img, str) and img:
             path = img if os.path.isabs(img) else os.path.join(base_dir, img)
@@ -574,84 +580,28 @@ class TimeTracker(tk.Tk):
     # ---------------- 悬浮条界面 ----------------
 
     def build_ui(self):
-        bar = tk.Frame(self, bg=BG)
-        bar.pack(fill="both", expand=True)
+        # 画布化界面：全部内容绘制在单一 Canvas 上，
+        # 皮肤图片可以作为真正的全条背景，文字直接画在图上
+        self.cv = tk.Canvas(self, highlightthickness=0, bg=BG)
+        self.cv.pack(fill="both", expand=True)
+        self._regions = []       # (x1,y1,x2,y2,kind,data) 命中区域
+        self._hover = None       # 当前悬停区域键
+        self._img_cache = {}     # 皮肤背景图缩放缓存
 
-        # 皮肤横幅图（PNG/GIF）：显示在悬浮条顶部，按窗口宽度近似缩放
-        self._skin_img = None
-        if SKIN_IMAGE:
-            try:
-                img = tk.PhotoImage(file=SKIN_IMAGE)
-                target_w = max(360, self.settings.get("font_size", 13) * 36)
-                ratio = target_w / img.width()
-                if ratio >= 2:
-                    img = img.zoom(int(ratio))
-                elif ratio <= 0.5:
-                    img = img.subsample(max(1, round(1 / ratio)))
-                self._skin_img = img  # 保引用防 GC
-                tk.Label(bar, image=img, bg=BG).pack(fill="x")
-            except (tk.TclError, OSError):
-                self._skin_img = None
+        self.cv.bind("<Motion>", self._on_motion)
+        self.cv.bind("<Leave>", self._on_leave)
+        self.cv.bind("<Double-Button-1>", self._on_double)
+        self.cv.bind("<Button-3>", self._on_right_click)
+        # 窗口尺寸变化（首次映射/缩放/待办增减）立即重绘，
+        # 保证点击区域与画面始终一致
+        self.cv.bind("<Configure>", lambda e: self._render())
 
-        # 顶部两行共用一个 grid，保证分类文字与进度条严格同列同宽
-        grid = tk.Frame(bar, bg=BG)
-        grid.pack(fill="x", padx=8, pady=(6, 0))
-        grid.columnconfigure(0, weight=0)   # 模式按钮列
-        for col in range(1, 4):
-            grid.columnconfigure(col, weight=1, uniform="cat")
-
-        self.mode_btn = tk.Label(grid, text="累计", font=(FAMILY, 10),
-                                 bg=BG, fg="#888888", cursor="hand2")
-        self.mode_btn.grid(row=0, column=0, sticky="w", padx=(2, 6))
-        self.mode_btn.bind("<Button-1>", self.toggle_show_mode)
-
-        self.labels = {}
-        for col, cat in enumerate(CATEGORIES, start=1):
-            lbl = tk.Label(grid, font=(FAMILY, 13), bg=BG, fg=FG_DIM,
-                           cursor="hand2")
-            lbl.bind("<Enter>", lambda e, l=lbl: l.config(fg=TXT)
-                     if self.running_cat is None else None)
-            lbl.bind("<Leave>", lambda e: self.refresh())
-            lbl.grid(row=0, column=col, sticky="ew")
-            # 松开时若未拖动则视为点击切换该分类
-            lbl.bind("<ButtonRelease-1>",
-                     lambda e, c=cat: self.click_or_drag_end(c))
-            self.labels[cat] = lbl
-
-        # 拖动绑定在根窗口：通过 bindtags 覆盖所有子控件；
+        # 拖动绑定在根窗口：通过 bindtags 覆盖画布；
         # drag_start 里 grab 独占指针，窗口移动后事件不断流
         self.bind("<Button-1>", self.drag_start, add="+")
         self.bind("<B1-Motion>", self.drag_move, add="+")
         self.bind("<ButtonRelease-1>", self.drag_release, add="+")
-
-        # 进度条行：与分类文字同一 grid 同一列
-        self.bars = {}
-        for col, cat in enumerate(CATEGORIES, start=1):
-            canvas = tk.Canvas(grid, height=4, bg=BG,
-                               highlightthickness=0)
-            canvas.grid(row=1, column=col, sticky="ew", pady=(2, 0))
-            canvas.bind("<Configure>",
-                        lambda e, cv=canvas: self.redraw_bar(cv))
-            self.bars[cat] = canvas
-
-        # 底部：状态 / 名言行
-        self.status = tk.Label(bar, text="", font=(FAMILY, 9),
-                               bg=BG, fg="#888888")
-        self.status.pack(fill="x", pady=(1, 4))
-
-        # 待办清单（可折叠）：标题行 + 条目区
-        self.todo_header = tk.Label(bar, text="▸ 待办", font=(FAMILY, 9),
-                                    bg=BG, fg="#9E9E9E", cursor="hand2",
-                                    anchor="w")
-        self.todo_header.pack(fill="x", padx=8)
-        self.todo_header.bind("<Button-1>",
-                              lambda e: self.toggle_todo_visible())
-        self.todo_body = tk.Frame(bar, bg=PANEL)
-        # 空列表/折叠时没有条目可右键，标题行/待办区兜底提供添加入口
-        self.todo_header.bind("<Button-3>", self.todo_area_menu)
-        self.todo_body.bind("<Button-3>", self.todo_area_menu)
-        # 是否显示由 refresh_todos() 按 todo_visible 决定
-        self.todo_items = []          # [(var, label)] 保持引用防 GC
+        self.bind("<ButtonRelease-1>", self._on_click, add="+")
 
         # 右键菜单
         self.menu = tk.Menu(self, tearoff=0)
@@ -704,32 +654,19 @@ class TimeTracker(tk.Tk):
                                   command=self.toggle_autostart)
         self.menu.add_command(label="检查更新", command=self.check_update)
         self.menu.add_command(label="退出", command=self.on_close)
-        for w in (bar, self.status, self.mode_btn):
-            w.bind("<Button-3>", self.popup_menu)
-        for lbl in self.labels.values():
-            lbl.bind("<Button-3>", self.popup_menu)
 
         # Ctrl+滚轮调节悬浮条大小
         self.bind("<Control-MouseWheel>", self.on_zoom)
         self.apply_ui_size()
 
     def apply_ui_size(self):
-        """按 settings 中的字号重建悬浮条尺寸与字体。"""
+        """按字号与待办数量计算窗口尺寸（画布内容随之重绘）。"""
         size = self.settings.get("font_size", 13)
-        for cat, lbl in self.labels.items():
-            lbl.config(font=(FAMILY, size))
-        self.mode_btn.config(font=(FAMILY, size - 3))
-        self.status.config(font=(FAMILY, size - 4))
-        bar_h = max(3, size // 4)
-        for canvas in self.bars.values():
-            canvas.config(height=bar_h)
         w = max(360, size * 36)
-        x, y = self.winfo_x(), self.winfo_y()
-        # 高度不手算：让 Tk 按全部子控件的实际请求高度自适应，
-        # 待办行数增减、字号缩放都不会裁切或留白
         self.update_idletasks()
-        h = max(self.winfo_reqheight(), int(size * 3.2) + bar_h + 26)
-        self.geometry(f"{w}x{h}+{x}+{y}")
+        L = self._layout(w, size)
+        x, y = self.winfo_x(), self.winfo_y()
+        self.geometry(f"{w}x{L['H']}+{x}+{y}")
         self.update_idletasks()
         self.refresh()
 
@@ -778,7 +715,7 @@ class TimeTracker(tk.Tk):
             self.save()
 
     def click_or_drag_end(self, cat):
-        if self.locked or self.drag_moved:
+        if self.locked or getattr(self, "drag_moved", False):
             return
         if self.settings.get("host_addr") and not self.sync_server:
             # 客户端：操作转发给主机执行，保持全网单一计时源
@@ -947,62 +884,218 @@ class TimeTracker(tk.Tk):
         self._apply_popup_topmost()
         if not self._is_topmost():
             self.attributes("-topmost", True)
-        for cat in CATEGORIES:
-            total = self.display_seconds(cat)
-            if self.running_cat == cat:
-                fg = COLORS[cat]
-                text = f"● {cat} {self.fmt(total)}"
-            elif self.mirror and self.mirror["cat"] == cat \
-                    and not self.running_cat:
-                fg = COLORS[cat]
-                text = f"◐ {cat} {self.fmt(total)}"
-            else:
-                fg = FG_DIM
-                text = f"○ {cat} {self.fmt(total)}"
-            self.labels[cat].config(text=text, fg=fg)
-            self.draw_progress(cat)
-        self.mode_btn.config(text="今日" if self.show_mode == "today" else "累计")
-        self.refresh_status()
-        self.refresh_todos()
+        self._render()
         if self.settings.get("mini"):
             self._draw_mini()
 
-    def redraw_bar(self, canvas):
-        """窗口/列宽变化时立即重绘对应进度条。"""
-        for cat, cv in self.bars.items():
-            if cv is canvas:
-                self.draw_progress(cat)
-                return
+    # ---------------- 画布渲染 ----------------
 
-    def _round_rect(self, canvas, x1, y1, x2, y2, r, **kw):
-        """平滑圆角矩形（canvas polygon + smooth）。"""
-        r = min(r, (x2 - x1) / 2, (y2 - y1) / 2)
-        pts = [x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2,
-               x2-r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1]
-        return canvas.create_polygon(pts, smooth=True, **kw)
+    def _bg_natural(self):
+        """皮肤背景图原始尺寸（含缓存）。"""
+        if not SKIN_IMAGE:
+            return None
+        nat = getattr(self, "_bg_nat", None)
+        if nat and nat[0] == SKIN_IMAGE:
+            return nat[1], nat[2]
+        try:
+            img = tk.PhotoImage(file=SKIN_IMAGE)
+        except (tk.TclError, OSError):
+            return None
+        self._bg_nat = (SKIN_IMAGE, img.width(), img.height())
+        return img.width(), img.height()
 
-    def draw_progress(self, cat):
-        canvas = self.bars[cat]
-        width = canvas.winfo_width()
-        height = canvas.winfo_height()
-        if width <= 1:
+    def _scaled_bg(self, W, H):
+        """把皮肤背景图缩放到 W×H（整数 zoom/subsample 链，带缓存）。"""
+        if not SKIN_IMAGE:
+            return None
+        key = (SKIN_IMAGE, W, H)
+        cached = self._img_cache.get(key)
+        if cached:
+            return cached
+        nat = self._bg_natural()
+        if not nat:
+            return None
+
+        def plan(target, src):
+            f = target / src
+            if f >= 1:
+                z = min(4, max(1, round(f)))
+                d = max(1, round(z / f))
+            else:
+                d = min(4, max(1, int(1 / f)))
+                z = 1
+            return z, d
+
+        zx, dx = plan(W, nat[0])
+        zy, dy = plan(H, nat[1])
+        img = tk.PhotoImage(file=SKIN_IMAGE)
+        if (zx, zy) != (1, 1):
+            img = img.zoom(zx, zy)
+        if (dx, dy) != (1, 1):
+            img = img.subsample(dx, dy)
+        self._img_cache.clear()  # 只保留当前尺寸，防止内存累积
+        self._img_cache[key] = img
+        return img
+
+    def _layout(self, W, size):
+        """计算画布布局几何与窗口总高。"""
+        nat = self._bg_natural()
+        banner_h = 0
+        if nat:
+            banner_h = max(24, min(int(nat[1] * W / nat[0]), 200))
+        s4 = max(9, size - 4)
+        pad_x = 10
+        y = banner_h + 6
+        rh = int(size * 1.9)
+        bar_h = max(3, size // 4)
+        bar_y = y + rh + 3
+        st_y = bar_y + bar_h + 5
+        st_h = s4 + 4
+        th_y = st_y + st_h + 2
+        hh = int(s4 * 1.7)
+        items = self.today_todos()
+        visible = self.settings.get("todo_visible", True)
+        n = min(5, len(items)) if visible else 0
+        more = bool(visible and len(items) > 5)
+        row_h = int(s4 * 1.8)
+        area_h = hh
+        if visible:
+            area_h += n * row_h + (int(s4 * 1.4) + 4 if more else 0)
+        H = th_y + area_h + 6
+        x0 = pad_x + 46
+        colw = (W - 8 - x0) / 3
+        return dict(banner_h=banner_h, y=y, rh=rh, bar_h=bar_h, bar_y=bar_y,
+                    st_y=st_y, th_y=th_y, hh=hh, row_h=row_h, n=n, more=more,
+                    visible=visible, pad_x=pad_x, x0=x0, colw=colw, W=W, H=H)
+
+    def _render(self):
+        """全量重绘画布（内容项少，1Hz 全绘无压力）。"""
+        cv = self.cv
+        if not cv.winfo_exists():
             return
-        canvas.delete("all")
-        goal = self.settings["goals"].get(cat, 0)
-        # 轨道（圆角）
-        self._round_rect(canvas, 0, 0, width, height,
-                         r=height / 2, fill=TRACK, outline="")
-        if not goal:
-            return
-        done = self.data["daily"].get(today_str(), {}).get(cat, 0)
-        if cat == self.running_cat:
-            done += self.elapsed()
-        pct = max(0.0, min(1.0, done / goal))
-        fill_w = max(height, width * pct)  # 至少画出一个圆头
-        self._round_rect(canvas, 0, 0, fill_w, height,
-                         r=height / 2, fill=COLORS[cat], outline="")
+        W = max(360, cv.winfo_width())
+        size = self.settings.get("font_size", 13)
+        s4 = max(9, size - 4)
+        L = self._layout(W, size)
+        cv.delete("all")
+        self._regions = []
 
-    def refresh_status(self):
+        # 背景：皮肤图片铺满 + 可选压暗层
+        if L["banner_h"]:
+            photo = self._scaled_bg(W, L["banner_h"])
+            if photo:
+                cv.create_image(0, 0, image=photo, anchor="nw")
+            if SKIN_DIM > 0:
+                cv.create_rectangle(0, 0, W, L["banner_h"], fill=BG,
+                                    stipple="gray25", width=0)
+
+        pad_x, x0, colw = L["pad_x"], L["x0"], L["colw"]
+        y, rh = L["y"], L["rh"]
+
+        # 模式切换（累计/今日）
+        mode_txt = "今日" if self.show_mode == "today" else "累计"
+        hover = self._hover == ("mode", None)
+        if hover:
+            self._round_rect(cv, 4, y + 4, pad_x + 42, y + rh - 2, 6,
+                             fill=HOVER, outline="")
+        cv.create_text(pad_x + 2, y + rh / 2, text=mode_txt, anchor="w",
+                       font=(FAMILY, size - 3),
+                       fill=TXT if hover else FG_DIM)
+        self._regions.append((4, y, pad_x + 46, y + rh, "mode", None))
+
+        # 分类行 + 进度条
+        for i, cat in enumerate(CATEGORIES):
+            cx = x0 + i * colw
+            total = self.display_seconds(cat)
+            if self.running_cat == cat:
+                fg, dot = COLORS[cat], "●"
+            elif self.mirror and self.mirror["cat"] == cat \
+                    and not self.running_cat:
+                fg, dot = COLORS[cat], "◐"
+            else:
+                fg, dot = FG_DIM, "○"
+            hov = self._hover == ("cat", cat)
+            if hov:
+                self._round_rect(cv, cx + 2, y + 2, cx + colw - 6, y + rh, 6,
+                                 fill=HOVER, outline="")
+            cv.create_text(cx + 8, y + rh / 2, anchor="w",
+                           text=f"{dot} {cat} {self.fmt(total)}",
+                           font=(FAMILY, size), fill=TXT if hov else fg)
+            self._regions.append((cx, y, cx + colw - 4, y + rh, "cat", cat))
+            bx, bw = cx + 4, colw - 12
+            goal = self.settings["goals"].get(cat, 0)
+            self._round_rect(cv, bx, L["bar_y"], bx + bw,
+                             L["bar_y"] + L["bar_h"], r=L["bar_h"] / 2,
+                             fill=TRACK, outline="")
+            if goal:
+                done = self.data["daily"].get(today_str(), {}).get(cat, 0)
+                if cat == self.running_cat:
+                    done += self.elapsed()
+                pct = max(0.0, min(1.0, done / goal))
+                fw = max(L["bar_h"], bw * pct)
+                self._round_rect(cv, bx, L["bar_y"], bx + fw,
+                                 L["bar_y"] + L["bar_h"], r=L["bar_h"] / 2,
+                                 fill=COLORS[cat], outline="")
+
+        # 状态 / 名言行
+        st_text, st_color = self._status_info()
+        cv.create_text(pad_x, L["st_y"], anchor="w", text=st_text,
+                       font=(FAMILY, s4), fill=st_color)
+
+        # 待办区
+        items = self.today_todos()
+        visible = L["visible"]
+        arrow = "▾" if visible else "▸"
+        if items:
+            undone = sum(1 for i in items if not i.get("done"))
+            header = f"{arrow} 待办 {undone}/{len(items)}"
+        else:
+            header = f"{arrow} 待办（右键添加）"
+        th_hov = self._hover == ("th", None)
+        if th_hov:
+            self._round_rect(cv, 4, L["th_y"], W - 4,
+                             L["th_y"] + L["hh"], 6, fill=HOVER, outline="")
+        cv.create_text(pad_x, L["th_y"] + L["hh"] / 2, anchor="w",
+                       text=header, font=(FAMILY, s4),
+                       fill=TXT if th_hov else "#9E9E9E")
+        self._regions.append((0, L["th_y"], W, L["th_y"] + L["hh"],
+                              "th", None))
+        if not visible:
+            return
+
+        # 待办条目：圈选点 + 文本 + 完成删除线
+        shown = items[:5]
+        for i, item in enumerate(shown):
+            ry = L["th_y"] + L["hh"] + i * L["row_h"]
+            done = bool(item.get("done", False))
+            hov = self._hover == ("todo", i)
+            if hov:
+                cv.create_rectangle(4, ry, W - 4, ry + L["row_h"],
+                                    fill=HOVER, width=0)
+            cy = ry + L["row_h"] / 2
+            r = s4 / 2 + 1
+            cv.create_oval(pad_x + 6, cy - r, pad_x + 6 + 2 * r, cy + r,
+                           fill=FG_DIM if done else "",
+                           outline=FG_DIM, width=2)
+            tcolor = "#777777" if done else TXT
+            tid = cv.create_text(pad_x + 16 + r, cy, anchor="w",
+                                 text=item.get("text", ""),
+                                 font=(FAMILY, s4), fill=tcolor)
+            if done:
+                bb = cv.bbox(tid)
+                if bb:
+                    cv.create_line(bb[0], cy, bb[2], cy,
+                                   fill="#777777", width=1)
+            self._regions.append((0, ry, W, ry + L["row_h"], "todo", i))
+
+        if len(items) > 5:
+            cv.create_text(pad_x, L["th_y"] + L["hh"] + 5 * L["row_h"] + 4,
+                           anchor="w",
+                           text=f"…还有 {len(items) - 5} 条（右键管理）",
+                           font=(FAMILY, s4 - 1), fill="#777777")
+
+    def _status_info(self):
+        """状态栏文字与颜色（画布渲染用）。"""
         now = datetime.now().timestamp()
         sync_tag = ""
         if self.sync_server:
@@ -1010,28 +1103,84 @@ class TimeTracker(tk.Tk):
         elif self.settings.get("host_addr"):
             sync_tag = f"（同步自 {self.settings['host_addr']}）"
         if self.locked:
-            self.status.config(text="已锁定：鼠标穿透，按 Ctrl+Alt+L 解锁",
-                               fg="#FFC107")
-        elif self.pom_state == "focus" and self.running_cat:
+            return "已锁定：鼠标穿透，按 Ctrl+Alt+L 解锁", ACCENT
+        if self.pom_state == "focus" and self.running_cat:
             remain = int(self.pom_end_ts - now)
-            self.status.config(
-                text=f"🍅 专注中，剩余 {self.fmt(max(0, remain))}{sync_tag}",
-                fg=COLORS["工作"])
-        elif self.pom_state == "break":
+            return (f"🍅 专注中，剩余 {self.fmt(max(0, remain))}{sync_tag}",
+                    COLORS["工作"])
+        if self.pom_state == "break":
             remain = int(self.pom_end_ts - now)
-            self.status.config(
-                text=f"☕ 休息中，剩余 {self.fmt(max(0, remain))}{sync_tag}",
-                fg="#888888")
-        elif self.mirror and not self.running_cat:
-            self.status.config(
-                text=f"主机正在计时：{self.mirror['cat']}{sync_tag}",
-                fg=COLORS.get(self.mirror["cat"], "#888888"))
-        elif self.idle_paused:
-            self.status.config(text="已自动暂停（检测到离开），点击分类继续"
-                                    + sync_tag, fg="#FFC107")
+            return (f"☕ 休息中，剩余 {self.fmt(max(0, remain))}{sync_tag}",
+                    "#888888")
+        if self.mirror and not self.running_cat:
+            return (f"主机正在计时：{self.mirror['cat']}{sync_tag}",
+                    COLORS.get(self.mirror["cat"], "#888888"))
+        if self.idle_paused:
+            return "已自动暂停（检测到离开），点击分类继续" + sync_tag, ACCENT
+        return (self.quote + sync_tag if sync_tag else self.quote, "#777777")
+
+    # ---------------- 画布事件 ----------------
+
+    def _region_at(self, x, y):
+        for reg in reversed(self._regions):
+            if reg[0] <= x <= reg[2] and reg[1] <= y <= reg[3]:
+                return reg
+        return None
+
+    def _on_motion(self, event):
+        reg = self._region_at(event.x, event.y)
+        hoverable = {"mode", "cat", "todo", "th"}
+        key = (reg[4], reg[5]) if reg and reg[4] in hoverable else None
+        if key != self._hover:
+            self._hover = key
+            self.cv.config(cursor="hand2" if key else "")
+            self._render()
+
+    def _on_leave(self, event):
+        if self._hover is not None:
+            self._hover = None
+            self.cv.config(cursor="")
+            self._render()
+
+    def _on_click(self, event):
+        if self.locked or getattr(self, "drag_moved", False):
+            return
+        reg = self._region_at(event.x, event.y)
+        if not reg:
+            return
+        kind, data = reg[4], reg[5]
+        if kind == "mode":
+            self.toggle_show_mode()
+            self.refresh()
+        elif kind == "cat":
+            self.click_or_drag_end(data)
+        elif kind == "todo":
+            self.toggle_todo_done(data)
+        elif kind == "th":
+            self.toggle_todo_visible()
+
+    def _on_double(self, event):
+        if self.locked or getattr(self, "drag_moved", False):
+            return
+        reg = self._region_at(event.x, event.y)
+        if reg and reg[4] == "todo":
+            self.edit_todo_item(reg[5])
+
+    def _on_right_click(self, event):
+        reg = self._region_at(event.x, event.y)
+        if reg and reg[4] == "todo":
+            self.todo_menu_popup(event, reg[5])
+        elif reg and reg[4] == "th":
+            self.todo_area_menu(event)
         else:
-            self.status.config(text=self.quote + sync_tag if sync_tag
-                               else self.quote, fg="#777777")
+            self.popup_menu(event)
+
+    def _round_rect(self, canvas, x1, y1, x2, y2, r, **kw):
+        """平滑圆角矩形（canvas polygon + smooth）。"""
+        r = min(r, (x2 - x1) / 2, (y2 - y1) / 2)
+        pts = [x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2,
+               x2-r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1]
+        return canvas.create_polygon(pts, smooth=True, **kw)
 
     def quote_loop(self):
         self.quote = QUOTES[int(datetime.now().timestamp()) // 60 % len(QUOTES)]
@@ -1783,109 +1932,12 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
     def toggle_todo_visible(self):
         self.settings["todo_visible"] = not self.settings.get("todo_visible", True)
         self.save()
-        self.refresh_todos()
         self.apply_ui_size()
-
-    def _todo_pool(self):
-        """待办区 5 个固定槽位控件：只创建一次，之后原地更新，
-        任何情况下都不销毁重建，保证零闪烁。槽位号即条目序号。"""
-        if getattr(self, "_todo_rows", None):
-            return self._todo_rows
-        size = self.settings.get("font_size", 13)
-        item_font = max(9, size - 4)
-        self._todo_rows = []
-        for idx in range(5):
-            row = tk.Frame(self.todo_body, bg=PANEL)
-            var = tk.BooleanVar(value=False)
-            cb = tk.Checkbutton(row, variable=var, bg=PANEL, activebackground=PANEL,
-                                selectcolor=TRACK, relief="flat",
-                                highlightthickness=0,
-                                font=(FAMILY, item_font),
-                                command=lambda i=idx: self.toggle_todo_done(i))
-            cb.pack(side="left")
-            txt = tk.Label(row, text="", font=(FAMILY, item_font),
-                           bg=PANEL, anchor="w", cursor="hand2")
-            txt.pack(side="left", fill="x")
-            widgets = (row, cb, txt)
-
-            def on_hover(e, ws=widgets, c=HOVER):
-                for x in ws:
-                    x.config(bg=c)
-                    if isinstance(x, tk.Checkbutton):
-                        x.config(activebackground=c)
-
-            def on_leave(e, ws=widgets, c=PANEL):
-                for x in ws:
-                    x.config(bg=c)
-                    if isinstance(x, tk.Checkbutton):
-                        x.config(activebackground=c)
-
-            for w in widgets:
-                w.bind("<Enter>", on_hover)
-                w.bind("<Leave>", on_leave)
-            for w in (row, cb, txt):
-                w.bind("<Button-3>", lambda e, i=idx: self.todo_menu_popup(e, i))
-            txt.bind("<Double-Button-1>",
-                     lambda e, i=idx: self.edit_todo_item(i))
-            self._todo_rows.append((var, cb, txt, row))
-        self._todo_more = tk.Label(self.todo_body, text="",
-                                   font=(FAMILY, max(8, size - 5)),
-                                   bg=BG, fg="#777777", anchor="w")
-        return self._todo_rows
-
-    def refresh_todos(self):
-        """待办区每秒被 refresh 调用；固定槽位原地更新，零闪烁。"""
-        items_all = self.today_todos()
-        visible = self.settings.get("todo_visible", True)
-        size = self.settings.get("font_size", 13)
-        item_font = max(9, size - 4)
-        arrow = "▾" if visible else "▸"
-        if items_all:
-            undone = sum(1 for i in items_all if not i.get("done"))
-            self.todo_header.config(text=f"{arrow} 待办 {undone}/{len(items_all)}")
-        else:
-            self.todo_header.config(text=f"{arrow} 待办（右键添加）")
-
-        if not visible:
-            self.todo_body.pack_forget()
-            return
-        self.todo_body.pack(fill="x", padx=10, pady=(0, 4))
-
-        rows = self._todo_pool()
-        shown = items_all[:5]
-        for i, (var, cb, txt, row) in enumerate(rows):
-            if i < len(shown):
-                item = shown[i]
-                done = bool(item.get("done", False))
-                var.set(done)  # 程序设值不触发 command，不会造成递归
-                cb.config(font=(FAMILY, item_font))
-                txt.config(text=item.get("text", ""))
-                self._style_todo_label(txt, done)
-                if not row.winfo_manager():
-                    row.pack(fill="x")
-            else:
-                row.pack_forget()
-
-        if len(items_all) > 5:
-            self._todo_more.config(
-                text=f"…还有 {len(items_all) - 5} 条（右键管理）",
-                font=(FAMILY, max(8, size - 5)))
-            if not self._todo_more.winfo_manager():
-                self._todo_more.pack(fill="x")
-        else:
-            self._todo_more.pack_forget()
-
-    def _style_todo_label(self, label, done):
-        item_font = max(9, self.settings.get("font_size", 13) - 4)
-        label.config(fg="#5A5A5A" if done else "#CCCCCC",
-                     font=(FAMILY, item_font,
-                           "overstrike" if done else "normal"))
 
     def _todo_touch(self):
         self.settings["todos_updated_ts"] = datetime.now().timestamp()
         self.save()
-        self.refresh_todos()
-        self.apply_ui_size()
+        self.apply_ui_size()  # 尺寸随条数变化，内部触发重绘
 
     def toggle_todo_done(self, idx):
         items = self.today_todos()
