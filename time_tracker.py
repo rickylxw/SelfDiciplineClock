@@ -43,7 +43,7 @@ APP_NAME = "DesktopTimeTracker"
 LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          ".instance.lock")
 
-VERSION = "1.8.0"
+VERSION = "1.10.0"
 _REPO = "rickylxw/SelfDiciplineClock"
 # 多源回退：raw.githubusercontent 国内经常超时，jsDelivr CDN 一般可达
 UPDATE_URLS = [
@@ -71,12 +71,17 @@ SKIN_IMAGE_H = None   # 背景区高度（像素，None=按图片比例）
 SKIN_IMAGE_POS = "top"  # 图片位置：top 横幅 / left 左侧立绘
 SKIN_IMAGE_W = 90      # 左侧立绘宽度
 SKIN_SHOW_DOT = True   # 分类名前是否显示状态圆点
+SKIN_MINI_EDGE = "right"  # 迷你小图标停靠边：left/right/bottom
+SKIN_MINI_SIZE = 26       # 迷你小图标尺寸
+SKIN_AUTO_MINI = False    # 启动即进入迷你模式
 # 默认配色快照：切回「默认」皮肤时恢复
 _DEFAULTS = {"BG": BG, "PANEL": PANEL, "TRACK": TRACK, "HOVER": HOVER,
              "FG_DIM": FG_DIM, "TXT": TXT, "ACCENT": ACCENT,
              "FAMILY": FAMILY, "SKIN_IMAGE": SKIN_IMAGE, "SKIN_DIM": SKIN_DIM,
              "SKIN_IMAGE_H": SKIN_IMAGE_H, "SKIN_IMAGE_POS": SKIN_IMAGE_POS,
-             "SKIN_IMAGE_W": SKIN_IMAGE_W, "SKIN_SHOW_DOT": SKIN_SHOW_DOT}
+             "SKIN_IMAGE_W": SKIN_IMAGE_W, "SKIN_SHOW_DOT": SKIN_SHOW_DOT,
+             "SKIN_MINI_EDGE": SKIN_MINI_EDGE, "SKIN_MINI_SIZE": SKIN_MINI_SIZE,
+             "SKIN_AUTO_MINI": SKIN_AUTO_MINI}
 _DEFAULT_CATS = dict(COLORS)
 
 # 皮肤可覆盖的颜色键 → 对应模块全局名
@@ -134,6 +139,19 @@ def apply_skin(skin, base_dir=""):
         sd = skin.get("show_dot")
         if isinstance(sd, bool):
             g["SKIN_SHOW_DOT"] = sd
+            changed = True
+        # 迷你小图标配置
+        me = skin.get("mini_edge")
+        if me in ("left", "right", "bottom"):
+            g["SKIN_MINI_EDGE"] = me
+            changed = True
+        ms = skin.get("mini_size")
+        if isinstance(ms, int) and 14 <= ms <= 64:
+            g["SKIN_MINI_SIZE"] = ms
+            changed = True
+        am = skin.get("auto_mini")
+        if isinstance(am, bool):
+            g["SKIN_AUTO_MINI"] = am
             changed = True
         # 背景图（PNG/GIF，相对皮肤文件所在目录）
         img = skin.get("image")
@@ -572,7 +590,7 @@ class TimeTracker(tk.Tk):
         self._topmost_done = set()  # 已打上置顶的弹窗，避免重复抢层级
         self.apply_skin_by_name(self.settings.get("skin", ""))  # 启动即换肤
         self.build_ui()
-        if self.settings.get("mini"):
+        if self.settings.get("mini") or SKIN_AUTO_MINI:
             self.minimize_to_mini()
         self.quote_loop()
         self.update_loop()
@@ -734,6 +752,11 @@ class TimeTracker(tk.Tk):
         self.drag_moved = False
         self.drag_off = (event.x_root - self.winfo_x(),
                          event.y_root - self.winfo_y())
+        # 按下点在待办行内：本次拖动为重排，不移动窗口
+        self.reorder = None
+        reg = self._region_at(event.x, event.y)
+        if reg and reg[4] == "todo":
+            self.reorder = {"from": reg[5], "y0": event.y_root}
         try:
             self.grab_set()  # 窗口移动后 motion 事件仍归本窗口
         except tk.TclError:
@@ -743,6 +766,16 @@ class TimeTracker(tk.Tk):
         if not hasattr(self, "drag_off"):
             return
         self.drag_moved = True
+        if getattr(self, "reorder", None):
+            row_h = self._layout(self.winfo_width(),
+                                 self.settings.get("font_size", 13))["row_h"]
+            shift = round((event.y_root - self.reorder["y0"]) / row_h)
+            items = self.today_todos()
+            self.reorder["to"] = max(0, min(self.reorder["from"] + shift,
+                                            len(items) - 1))
+            self.reorder["cur_y"] = event.y_root
+            self._render()
+            return
         # 钳制在屏幕内，至少留 60px 可见，避免拖丢找不回
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         nx = max(0, min(event.x_root - self.drag_off[0], sw - 60))
@@ -754,6 +787,15 @@ class TimeTracker(tk.Tk):
             self.grab_release()
         except tk.TclError:
             pass
+        if getattr(self, "reorder", None):
+            r = self.reorder
+            if "to" in r and r["to"] != r["from"]:
+                items = self.today_todos()
+                item = items.pop(r["from"])
+                items.insert(r["to"], item)
+                self._todo_touch()
+            self.reorder = None
+            return
         if getattr(self, "drag_moved", False):
             self.data["geometry"] = [self.winfo_x(), self.winfo_y()]
             self.save()
@@ -1165,11 +1207,16 @@ class TimeTracker(tk.Tk):
                        fill=TXT if th_hov else "#9E9E9E")
         self._regions.append((pad_x, L["th_y"], W, L["th_y"] + L["hh"],
                               "th", None))
+        self._draw_tooltip(cv, W, L, size, s4)
         if not visible:
             return
 
         # 待办条目：圈选点 + 文本 + 完成删除线
         shown = items[:5]
+        ro = getattr(self, "reorder", None)
+        if ro and "to" in ro and ro["to"] < 5:
+            iy = L["th_y"] + L["hh"] + ro["to"] * L["row_h"]
+            cv.create_line(6, iy, W - 6, iy, fill=ACCENT, width=2)
         for i, item in enumerate(shown):
             ry = L["th_y"] + L["hh"] + i * L["row_h"]
             done = bool(item.get("done", False))
@@ -1198,6 +1245,41 @@ class TimeTracker(tk.Tk):
                            anchor="w",
                            text=f"…还有 {len(items) - 5} 条（右键管理）",
                            font=(FAMILY, s4 - 1), fill="#777777")
+
+    def _draw_tooltip(self, cv, W, L, size, s4):
+        """悬停明细：分类显示 今日/目标/剩余，待办行显示提示。"""
+        if not getattr(self, "_hover", None) or not getattr(self, "_mouse", None):
+            return
+        kind, data = self._hover
+        mx, my = self._mouse
+        if kind == "cat":
+            cat = data
+            today = self.data["daily"].get(today_str(), {}).get(cat, 0)
+            if cat == self.running_cat:
+                today += self.elapsed()
+            goal = self.settings["goals"].get(cat, 0)
+            if goal:
+                remain = goal - today
+                line2 = (f"剩余 {self.fmt(max(0, remain))}" if remain >= 0
+                         else f"已超出 {self.fmt(-remain)}")
+            else:
+                line2 = "未设目标"
+            lines = [f"今日 {self.fmt(today)}", line2]
+        elif kind == "todo":
+            lines = ["单击勾选完成 · 双击编辑 · 右键更多"]
+        else:
+            return
+        f = tkfont.Font(family=FAMILY, size=s4, root=self)
+        tw = max(f.measure(t) for t in lines) + 16
+        th = len(lines) * (s4 + 4) + 10
+        tx = min(mx + 12, W - tw - 4)
+        ty = my + 14
+        self._round_rect(cv, tx, ty, tx + tw, ty + th, 6,
+                         fill="#000000", outline="#555555")
+        for i, line in enumerate(lines):
+            cv.create_text(tx + 8, ty + 6 + i * (s4 + 4) + s4 / 2,
+                           anchor="w", text=line, font=(FAMILY, s4),
+                           fill="#E8E8E8")
 
     def _status_info(self):
         """状态栏文字与颜色（画布渲染用）。"""
@@ -1236,6 +1318,7 @@ class TimeTracker(tk.Tk):
         reg = self._region_at(event.x, event.y)
         hoverable = {"mode", "cat", "todo", "th"}
         key = (reg[4], reg[5]) if reg and reg[4] in hoverable else None
+        self._mouse = (event.x, event.y)
         if key != self._hover:
             self._hover = key
             self.cv.config(cursor="hand2" if key else "")
@@ -1382,13 +1465,15 @@ class TimeTracker(tk.Tk):
 
     # ---------------- 迷你贴边小图标 ----------------
 
-    MINI_SIZE = 26
+    @property
+    def MINI_SIZE(self):
+        return SKIN_MINI_SIZE
 
     def _mini_dock_pos(self):
         """按停靠边计算小图标位置（沿边位置取自记忆，钳制在屏内）。"""
         size = self.MINI_SIZE
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        edge = self.settings.get("mini_edge", "right")
+        edge = SKIN_MINI_EDGE if SKIN_MINI_EDGE in ("left", "right", "bottom")             else self.settings.get("mini_edge", "right")
         along = self.settings.get("mini_pos") or [sh // 3]
         along = max(size, min(int(along[0]), sh - size - 2))
         if edge == "left":
@@ -1493,7 +1578,7 @@ class TimeTracker(tk.Tk):
         self.mini_moved = True
         size = self.MINI_SIZE
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        edge = self.settings.get("mini_edge", "right")
+        edge = SKIN_MINI_EDGE if SKIN_MINI_EDGE in ("left", "right", "bottom")             else self.settings.get("mini_edge", "right")
         # 停靠轴钉死在边缘，自由轴跟随鼠标并钳制
         if edge == "left":
             x, y = 2, event.y_root - self.mini_off[1]
@@ -2182,13 +2267,31 @@ svg {{ background: #fafafa; border: 1px solid #eee; }}
     # ---------------- 通用 ----------------
 
     def save(self):
-        # 写入前保留上一份，写坏或误删时还能从 .bak 找回
+        # 写入前保留上一份（.bak），并按天轮换日期备份（保留 7 天）
         import shutil
+        import glob
         try:
             if os.path.exists(DATA_FILE):
                 shutil.copy2(DATA_FILE, DATA_FILE + ".bak")
+                today = today_str()
+                daily = os.path.join(
+                    os.path.dirname(DATA_FILE),
+                    "time_data_" + today + ".bak")
+                if not os.path.exists(daily):  # 每天第一笔写入时留存当日版
+                    shutil.copy2(DATA_FILE, daily)
+                olds = glob.glob(os.path.join(
+                    os.path.dirname(DATA_FILE), "time_data_20??-??-??.bak"))
+                for p in olds:
+                    date = os.path.basename(p)[10:-4]
+                    if self._days_ago(date) > 7:
+                        os.remove(p)
         except OSError:
             pass
+
+    @staticmethod
+    def _days_ago(date_str):
+        return (datetime.now() -
+                datetime.strptime(date_str, "%Y-%m-%d")).days
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=1)
         self._last_mtime = self.file_mtime()
