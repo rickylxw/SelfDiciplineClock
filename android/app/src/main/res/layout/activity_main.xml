@@ -69,7 +69,14 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="10dp"
-                android:text="🍅 番茄钟：关" />
+                android:text="🍅 关" />
+
+            <Button
+                android:id="@+id/hist_btn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:text="📜 历史" />
         </LinearLayout>
 
         <!-- 分类卡片由代码填充 -->

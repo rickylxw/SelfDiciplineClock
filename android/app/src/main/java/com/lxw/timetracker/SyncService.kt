@@ -27,6 +27,7 @@ object SyncState {
     @Volatile var totals = mutableMapOf("工作" to 0L, "游戏" to 0L, "学习" to 0L)
     @Volatile var todayTotals = mutableMapOf("工作" to 0L, "游戏" to 0L, "学习" to 0L)
     @Volatile var goals = mapOf<String, Double>()
+    @Volatile var daily = JSONObject()     // 完整按天数据，历史统计用
 
     // 待办：完整表按日期分组；todosToday 为今日展示列表（今天不存在时携入昨天未完成）
     @Volatile var todosAll = JSONObject()
@@ -150,6 +151,7 @@ class SyncService : Service() {
                 SyncState.totals = sum
                 SyncState.todayTotals = todaySum
                 SyncState.goals = goals
+                SyncState.daily = daily
                 SyncState.runningCat = rc
                 SyncState.connected = true
                 val pom = st.optJSONObject("pom")

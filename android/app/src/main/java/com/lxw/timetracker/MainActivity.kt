@@ -114,6 +114,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.pom_btn).setOnClickListener {
             togglePomodoro(!SyncState.pomEnabled)
         }
+        findViewById<Button>(R.id.hist_btn).setOnClickListener { showHistoryDialog() }
         todoList = findViewById(R.id.todo_list)
         todoEdit = findViewById(R.id.todo_edit)
         todoEdit.setTextColor(Color.parseColor("#EEEEEE"))
@@ -246,7 +247,7 @@ class MainActivity : Activity() {
             }
         }
         findViewById<Button>(R.id.pom_btn).text =
-            if (SyncState.pomEnabled) "🍅 番茄钟：开" else "🍅 番茄钟：关"
+            if (SyncState.pomEnabled) "🍅 开" else "🍅 关"
         val t = transientMsg
         if (t != null && liveTs < transientUntil) {
             statusView.text = t
@@ -596,6 +597,112 @@ class MainActivity : Activity() {
         val total = seconds.toInt()
         return String.format(Locale.CHINA, "%02d:%02d", total / 60, total % 60)
     }
+
+    /** 紧凑时长：3661s → "1小时1分"，不足 1 分钟显示秒。 */
+    private fun hm(seconds: Long): String {
+        val m = seconds / 60
+        return when {
+            m >= 60 -> if (m % 60 > 0) "${m / 60}小时${m % 60}分" else "${m / 60}小时"
+            m >= 1 -> "${m}分"
+            else -> "${seconds}秒"
+        }
+    }
+
+    // ---------------- 历史统计（按天/周，与电脑端口径一致） ----------------
+
+    private fun showHistoryDialog() {
+        val daily = SyncState.daily
+        if (daily.length() == 0) {
+            Toast.makeText(this, "主机还没有任何记录", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val density = resources.displayMetrics.density
+        val box = android.widget.ScrollView(this)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((24 * density).toInt(), (16 * density).toInt(),
+                       (24 * density).toInt(), (8 * density).toInt())
+        }
+
+        // ---- 按天：最近 14 天，倒序 ----
+        col.addView(sectionTitle("按天（最近 14 天）", density))
+        val days = ArrayList<String>()
+        for (key in daily.keys()) days.add(key)
+        days.sortDescending()
+        for (d in days.take(14)) {
+            val day = daily.optJSONObject(d) ?: continue
+            val sum = CATS.sumOf { day.optLong(it, 0) }
+            col.addView(historyLine(
+                d.substring(5),
+                "工 ${hm(day.optLong("工作", 0))}  游 ${hm(day.optLong("游戏", 0))}  "
+                    + "学 ${hm(day.optLong("学习", 0))}",
+                "合计 ${hm(sum)}", density))
+        }
+
+        // ---- 按周：周一起始，倒序 ----
+        col.addView(sectionTitle("按周（周一起始）", density))
+        val weeks = linkedMapOf<String, LongArray>()
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
+        for (d in days) {
+            val day = daily.optJSONObject(d) ?: continue
+            val date = fmt.parse(d) ?: continue
+            val cal = java.util.Calendar.getInstance()
+            cal.time = date
+            // 周一为一周开始；Calendar 周日=1..周六=7 → 周一=2
+            val dow = cal.get(java.util.Calendar.DAY_OF_WEEK)
+            cal.add(java.util.Calendar.DAY_OF_MONTH,
+                    if (dow == java.util.Calendar.SUNDAY) -6 else 2 - dow)
+            val monday = fmt.format(cal.time)
+            val acc = weeks.getOrPut(monday) { LongArray(3) }
+            for ((ci, cat) in CATS.withIndex()) acc[ci] += day.optLong(cat, 0)
+        }
+        val weekKeys = weeks.keys.sortedDescending()
+        val wkFmt = java.text.SimpleDateFormat("MM-dd", Locale.CHINA)
+        for (monday in weekKeys) {
+            val acc = weeks[monday] ?: continue
+            val cal = java.util.Calendar.getInstance()
+            cal.time = fmt.parse(monday) ?: continue
+            cal.add(java.util.Calendar.DAY_OF_MONTH, 6)
+            val label = "${wkFmt.format(fmt.parse(monday)!!)} ~ ${wkFmt.format(cal.time)}"
+            val sum = acc.sum()
+            col.addView(historyLine(label,
+                "工 ${hm(acc[0])}  游 ${hm(acc[1])}  学 ${hm(acc[2])}",
+                "合计 ${hm(sum)}", density))
+        }
+        box.addView(col)
+        AlertDialog.Builder(this)
+            .setTitle("历史统计")
+            .setView(box)
+            .setPositiveButton("关闭", null)
+            .show()
+    }
+
+    private fun sectionTitle(text: String, density: Float): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.parseColor("#4CAF50"))
+            setPadding(0, (14 * density).toInt(), 0, (4 * density).toInt())
+        }
+
+    private fun historyLine(date: String, detail: String, total: String,
+                            density: Float): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, (5 * density).toInt(), 0, (5 * density).toInt())
+            addView(TextView(this@MainActivity).apply {
+                this.text = "$date    $total"
+                textSize = 14f
+                setTextColor(Color.parseColor("#EEEEEE"))
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            addView(TextView(this@MainActivity).apply {
+                this.text = detail
+                textSize = 12f
+                setTextColor(Color.parseColor("#999999"))
+            })
+        }
 
     /** 远程开关主机端番茄钟；主机空闲时开启会自动开始「工作」专注。 */
     private fun togglePomodoro(on: Boolean) {
