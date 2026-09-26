@@ -2,6 +2,7 @@
 time_data.json
 time_data.json.bak
 time_data.json.migrated.bak
+time_data_*.bak
 time_tracker.py.update.bak
 
 __pycache__/
