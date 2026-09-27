@@ -33,11 +33,15 @@ object SyncState {
     @Volatile var todosAll = JSONObject()
     @Volatile var todosToday = org.json.JSONArray()
     @Volatile var todosPushedTs = 0.0      // 手机端最近一次推送待办的时刻，短暂抑制回写覆盖
+    @Volatile var goalsPushedTs = 0.0      // 手机端最近一次推送目标的时刻，作用同上
 
     // 番茄钟：主机纪元秒制的阶段结束时刻；state 为 null 表示空闲
     @Volatile var pomEnabled = false
     @Volatile var pomState: String? = null
     @Volatile var pomEnd = 0.0
+
+    // 连续计时提醒：本会话已提醒到的 elapsed 刻度（秒）
+    @Volatile var liveRemindAt = 0.0
 
     fun todayStr(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA)
@@ -150,7 +154,9 @@ class SyncService : Service() {
                          else st.getString("running_cat")
                 SyncState.totals = sum
                 SyncState.todayTotals = todaySum
-                SyncState.goals = goals
+                // 手机端刚推送过目标就先不覆盖，等主机消化后再取
+                if (System.nanoTime() / 1_000_000_000.0 - SyncState.goalsPushedTs > 5.0)
+                    SyncState.goals = goals
                 SyncState.daily = daily
                 SyncState.runningCat = rc
                 SyncState.connected = true
@@ -163,6 +169,7 @@ class SyncService : Service() {
                     SyncState.liveStartElapsed = st.optDouble("elapsed", 0.0)
                     SyncState.liveStartTs = System.nanoTime() / 1_000_000_000.0
                 }
+                checkContinuousReminder(rc)
                 // 待办：手机端刚推送过就先不覆盖，等主机消化后再取，避免显示回跳
                 if (System.nanoTime() / 1_000_000_000.0 - SyncState.todosPushedTs > 5.0) {
                     val todosObj = st.optJSONObject("todos") ?: JSONObject()
@@ -189,6 +196,51 @@ class SyncService : Service() {
             }
         }
         return list
+    }
+
+    /**
+     * 连续计时提醒：与电脑端同规则——满 1 小时提醒一次，之后每多 1 小时再提醒。
+     * 会话时长出现回退（换分类/重新开始）时自动重置已提醒刻度。
+     */
+    private fun checkContinuousReminder(runningCat: String?) {
+        if (runningCat == null) {
+            SyncState.liveRemindAt = 0.0
+            return
+        }
+        val elapsed = SyncState.liveStartElapsed +
+            (System.nanoTime() / 1_000_000_000.0 - SyncState.liveStartTs)
+        if (elapsed < SyncState.liveRemindAt) SyncState.liveRemindAt = 0.0
+        if (elapsed < MainActivity.CONTINUOUS_ALERT_SECONDS ||
+            elapsed - SyncState.liveRemindAt < MainActivity.CONTINUOUS_ALERT_SECONDS)
+            return
+        SyncState.liveRemindAt = elapsed
+        val hours = (elapsed / 3600).toInt()
+        val (title, msg) = when (runningCat) {
+            "工作" -> "健康提醒" to "已连续工作 $hours 小时，起来活动一下吧！"
+            "游戏" -> "时长提醒" to "游戏已连续 $hours 小时，注意休息哦～"
+            else -> "时长提醒" to "「$runningCat」已连续 $hours 小时。"
+        }
+        notifyReminder(title, msg)
+    }
+
+    private fun notifyReminder(title: String, message: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(NotificationChannel(
+                "remind", "计时提醒", NotificationManager.IMPORTANCE_DEFAULT))
+        }
+        val pi = android.app.PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            android.app.PendingIntent.FLAG_IMMUTABLE)
+        val b = if (Build.VERSION.SDK_INT >= 26)
+            Notification.Builder(this, "remind") else Notification.Builder(this)
+        nm.notify(2, b.setContentTitle(title)
+            .setContentText(message)
+            .setStyle(Notification.BigTextStyle().bigText(message))
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build())
     }
 
     private fun reportActivity() {

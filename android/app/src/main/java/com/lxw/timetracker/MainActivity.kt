@@ -47,6 +47,7 @@ class MainActivity : Activity() {
         const val PORT = 8765
         const val POLL_MS = 3000L
         const val TICK_MS = 1000L
+        const val CONTINUOUS_ALERT_SECONDS = 3600.0   // 与电脑端一致：满 1 小时提醒
 
         // 与桌面端相同的多源回退：raw.github 国内常超时，jsDelivr 一般可达
         val UPDATE_BASES = listOf(
@@ -120,6 +121,8 @@ class MainActivity : Activity() {
         todoEdit.setTextColor(Color.parseColor("#EEEEEE"))
         todoEdit.setOnEditorActionListener { _, _, _ -> addTodo(); true }
         findViewById<Button>(R.id.todo_add_btn).setOnClickListener { addTodo() }
+        findViewById<Button>(R.id.goals_btn).setOnClickListener { showGoalsDialog() }
+        findViewById<View>(R.id.clear_done_btn).setOnClickListener { clearDoneTodos() }
         buildCards()
         // 常驻通知需要通知权限（Android 13+），拒绝不影响同步，只是通知不可见
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -260,6 +263,10 @@ class MainActivity : Activity() {
                 SyncState.pomState == "break" -> " · ☕ 休息剩余 ${mmss(remain)}"
                 else -> ""
             }
+            val liveElapsed = if (SyncState.runningCat != null)
+                SyncState.liveStartElapsed + (liveTs - SyncState.liveStartTs) else 0.0
+            val contTag = if (liveElapsed >= CONTINUOUS_ALERT_SECONDS)
+                " · ⏰ 已连续 ${(liveElapsed / 3600).toInt()} 小时" else ""
             statusView.text = when {
                 !SyncState.connected -> if (SyncState.host.isEmpty())
                     "未连接，请填写主机 IP"
@@ -267,7 +274,7 @@ class MainActivity : Activity() {
                 SyncState.pomState == "break" ->
                     "☕ 休息中，剩余 ${mmss(remain)}，结束后自动开始专注"
                 SyncState.runningCat != null ->
-                    "● 主机正在计时：${SyncState.runningCat}$pomTag"
+                    "● 主机正在计时：${SyncState.runningCat}$pomTag$contTag"
                 else -> "已连接 ${SyncState.host} · 空闲"
             }
             statusView.setTextColor(if (SyncState.connected)
@@ -305,6 +312,10 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(0, (6 * density).toInt(), 0, (6 * density).toInt())
                 setOnClickListener { toggleTodo(i) }
+                setOnLongClickListener {
+                    showTodoActions(i)
+                    true
+                }
             }
             CheckBox(this).apply {
                 isChecked = done
@@ -330,27 +341,100 @@ class MainActivity : Activity() {
     private fun toggleTodo(index: Int) {
         val item = SyncState.todosToday.optJSONObject(index) ?: return
         val updated = JSONObject(item.toString()).put("done", !item.optBoolean("done"))
-        applyAndPushTodo(index, updated)
+        commitTodayList(replaceAt(index, updated))
     }
 
     private fun addTodo() {
         val text = todoEdit.text.toString().trim()
         if (text.isEmpty()) return
-        applyAndPushTodo(SyncState.todosToday.length(),
-            JSONObject().put("text", text).put("done", false))
+        val list = cloneToday()
+        list.put(JSONObject().put("text", text).put("done", false))
         todoEdit.setText("")
+        commitTodayList(list)
     }
 
-    /** 把修改写入待办表（今天不存在则按携入规则物化今天），乐观刷新并推送。 */
-    private fun applyAndPushTodo(index: Int, newItem: JSONObject) {
-        val todayKey = SyncState.todayStr()
-        // 基于最新展示列表生成新今日列表；index 等于长度时为追加（新增待办）
-        val list = JSONArray()
-        for (i in 0 until SyncState.todosToday.length()) {
-            list.put(if (i == index) newItem
-                     else JSONObject(SyncState.todosToday.optJSONObject(i)?.toString() ?: "{}"))
+    /** 长按待办：编辑 / 上移 / 下移 / 删除（与电脑端右键菜单一致）。 */
+    private fun showTodoActions(index: Int) {
+        val item = SyncState.todosToday.optJSONObject(index) ?: return
+        val options = arrayOf("✏️ 编辑…", "⬆️ 上移", "⬇️ 下移", "🗑 删除")
+        AlertDialog.Builder(this)
+            .setTitle(item.optString("text"))
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> editTodo(index)
+                    1 -> if (index > 0) commitTodayList(swap(index, index - 1))
+                    2 -> if (index < SyncState.todosToday.length() - 1)
+                        commitTodayList(swap(index, index + 1))
+                    3 -> commitTodayList(removeAt(index))
+                }
+            }
+            .show()
+    }
+
+    private fun editTodo(index: Int) {
+        val item = SyncState.todosToday.optJSONObject(index) ?: return
+        val input = EditText(this).apply {
+            setText(item.optString("text"))
+            setSelection(text.length)
         }
-        if (index >= list.length()) list.put(newItem)
+        AlertDialog.Builder(this)
+            .setTitle("编辑待办")
+            .setView(input)
+            .setPositiveButton("保存") { _, _ ->
+                val text = input.text.toString().trim()
+                if (text.isNotEmpty())
+                    commitTodayList(replaceAt(index,
+                        JSONObject(item.toString()).put("text", text)))
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun clearDoneTodos() {
+        val list = cloneToday()
+        var removed = 0
+        for (i in list.length() - 1 downTo 0) {
+            if (list.optJSONObject(i)?.optBoolean("done") == true) {
+                list.remove(i)
+                removed++
+            }
+        }
+        if (removed == 0) {
+            Toast.makeText(this, "没有已完成项", Toast.LENGTH_SHORT).show()
+            return
+        }
+        commitTodayList(list)
+        Toast.makeText(this, "已清除 $removed 条已完成", Toast.LENGTH_SHORT).show()
+    }
+
+    // ---- 待办表的纯变换：都基于今日展示列表的拷贝 ----
+
+    private fun cloneToday(): JSONArray =
+        JSONArray(SyncState.todosToday.toString())
+
+    private fun replaceAt(index: Int, newItem: JSONObject): JSONArray {
+        val list = cloneToday()
+        list.put(index, newItem)
+        return list
+    }
+
+    private fun removeAt(index: Int): JSONArray {
+        val list = cloneToday()
+        list.remove(index)
+        return list
+    }
+
+    private fun swap(a: Int, b: Int): JSONArray {
+        val list = cloneToday()
+        val tmp = list.optJSONObject(a)?.toString() ?: "{}"
+        list.put(a, JSONObject(list.optJSONObject(b)?.toString() ?: "{}"))
+        list.put(b, JSONObject(tmp))
+        return list
+    }
+
+    /** 把今日列表写入待办表（含携入物化），乐观刷新并整表推送主机。 */
+    private fun commitTodayList(list: JSONArray) {
+        val todayKey = SyncState.todayStr()
         // 整表替换语义：必须基于完整表修改，否则会丢掉其他日期的待办
         val all = JSONObject(SyncState.todosAll.toString())
         all.put(todayKey, list)
@@ -367,14 +451,83 @@ class MainActivity : Activity() {
         val ts = System.currentTimeMillis() / 1000.0
         Thread {
             try {
-                httpPost("http://${SyncState.host}:$PORT/merge",
-                    """{"todos":$all,"todos_ts":$ts,"user_idle":0}""")
+                val payload = JSONObject().put("todos", all)
+                    .put("todos_ts", ts).put("user_idle", 0)
+                httpPost("http://${SyncState.host}:$PORT/merge", payload.toString())
                 SyncState.todosPushedTs = System.nanoTime() / 1_000_000_000.0
                 runOnUiThread {
                     startForegroundService(Intent(this, SyncService::class.java))
                 }
             } catch (e: Exception) {
                 runOnUiThread { flashStatus("❌ 待办同步失败，主机不可达", 4.0) }
+            }
+        }.start()
+    }
+
+    // ---------------- 每日目标修改 ----------------
+
+    /** 编辑每日目标（小时，0=不设），经 /merge 推送主机（goals_ts 新者胜）。 */
+    private fun showGoalsDialog() {
+        val density = resources.displayMetrics.density
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val inputs = mutableMapOf<String, EditText>()
+        for (cat in CATS) {
+            col.addView(TextView(this).apply {
+                text = "$cat（小时，0 = 不设目标）"
+                textSize = 13f
+                setTextColor(Color.parseColor("#999999"))
+                setPadding((8 * density).toInt(), (8 * density).toInt(), 0, 0)
+            })
+            val input = EditText(this).apply {
+                val hours = (SyncState.goals[cat] ?: 0.0) / 3600
+                setText(if (hours > 0) trimHours(hours) else "0")
+                setTextColor(Color.parseColor("#EEEEEE"))
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                    android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            }
+            col.addView(input)
+            inputs[cat] = input
+        }
+        AlertDialog.Builder(this)
+            .setTitle("每日目标")
+            .setView(col)
+            .setPositiveButton("保存") { _, _ ->
+                val goals = JSONObject()
+                try {
+                    for ((cat, input) in inputs)
+                        goals.put(cat, (input.text.toString().toDouble()
+                            ).coerceAtLeast(0.0) * 3600.0)
+                } catch (e: NumberFormatException) {
+                    Toast.makeText(this, "请输入有效数字", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                pushGoals(goals)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun trimHours(hours: Double): String =
+        if (hours == hours.toLong().toDouble()) hours.toLong().toString()
+        else String.format(Locale.CHINA, "%.1f", hours)
+
+    private fun pushGoals(goals: JSONObject) {
+        if (SyncState.host.isEmpty()) return
+        SyncState.lastTouchTs = System.nanoTime() / 1_000_000_000.0
+        flashStatus("⏳ 正在同步目标…")
+        Thread {
+            try {
+                val payload = JSONObject().put("goals", goals)
+                    .put("goals_ts", System.currentTimeMillis() / 1000.0)
+                    .put("user_idle", 0)
+                httpPost("http://${SyncState.host}:$PORT/merge", payload.toString())
+                SyncState.goalsPushedTs = System.nanoTime() / 1_000_000_000.0
+                runOnUiThread {
+                    flashStatus("✅ 目标已同步到主机", 2.5)
+                    startForegroundService(Intent(this, SyncService::class.java))
+                }
+            } catch (e: Exception) {
+                runOnUiThread { flashStatus("❌ 目标同步失败，主机不可达", 4.0) }
             }
         }.start()
     }

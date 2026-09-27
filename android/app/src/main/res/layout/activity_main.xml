@@ -87,14 +87,31 @@
             android:layout_marginTop="12dp"
             android:orientation="vertical" />
 
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:text="今日待办"
-            android:textColor="#EEEEEE"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="今日待办（长按可编辑/排序/删除）"
+                android:textColor="#EEEEEE"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/clear_done_btn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:padding="6dp"
+                android:text="清除已完成"
+                android:textColor="#4CAF50"
+                android:textSize="13sp" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/todo_list"
@@ -151,6 +168,13 @@
                 android:layout_height="wrap_content"
                 android:text="检查更新" />
 
+            <Button
+                android:id="@+id/goals_btn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:text="🎯 目标" />
+
             <TextView
                 android:id="@+id/update_view"
                 android:layout_width="0dp"
@@ -167,7 +191,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
             android:lineSpacingExtra="4dp"
-            android:text="使用说明：\n1. 电脑端右键悬浮条 → 局域网同步 → 作为主机共享\n2. 手机与电脑连同一 Wi-Fi\n3. 填入电脑 IP 点连接（只填 IP，端口不用）\n4. 点击卡片远程开始/暂停对应分类\n5. 待办勾选/新增、今日目标进度与电脑实时同步\n6. 新版本可点「检查更新」升级（启动时也会自动检查）"
+            android:text="使用说明：\n1. 电脑端右键悬浮条 → 局域网同步 → 作为主机共享\n2. 手机与电脑连同一 Wi-Fi\n3. 填入电脑 IP 点连接（只填 IP，端口不用）\n4. 点击卡片远程开始/暂停；长按待办可编辑/排序/删除\n5. 「🎯 目标」改每日目标，待办/目标与电脑双向同步\n6. 连续计时满 1 小时手机会发提醒通知\n7. 新版本可点「检查更新」升级（启动时也会自动检查）"
             android:textColor="#666666"
             android:textSize="12sp" />
     </LinearLayout>
