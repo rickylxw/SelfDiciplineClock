@@ -244,11 +244,16 @@ class SyncService : Service() {
     }
 
     private fun reportActivity() {
-        // 服务存活即视为手机端在线（idle=0），主机端不会误判离开自动暂停
+        // 亮屏=正在用手机，视为「人在」，主机不会暂停计时；
+        // 熄屏=人已离开（手机搁置/口袋），上报大 idle（≥主机阈值 300s），
+        // 让主机恢复「键鼠空闲 5 分钟自动暂停」的正常判断。
+        // v1.6 曾无条件报 0，导致人离开后计时永不暂停。
+        val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val idle = if (pm.isInteractive) 0.0 else 600.0
         Thread {
             try {
                 httpPost("http://${SyncState.host}:${MainActivity.PORT}/activity",
-                         """{"idle":0}""")
+                         """{"idle":$idle}""")
             } catch (e: Exception) {
                 // 上报失败不影响主流程
             }
